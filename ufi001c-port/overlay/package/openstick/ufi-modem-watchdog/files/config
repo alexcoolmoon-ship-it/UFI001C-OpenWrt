@@ -1,0 +1,3 @@
+config watchdog 'main'
+	option enabled '1'
+	option allow_reboot '1'
