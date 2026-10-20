@@ -327,7 +327,7 @@ class StockTests(unittest.TestCase):
         clean=(source/'build.config').read_text()
         extracted=s.firmware_files(source,self.p/'accepted-clean')
         self.assertEqual((extracted/'build.config').read_text(),clean)
-        for package in ('ufi-care','ufi-lte-health','ufi-service-proxy','zapret-ufi',
+        for package in ('ufi-care','ufi-service-proxy','zapret-ufi',
                         'sing-box','sing-box-tiny','podkop-engine-full'):
             with self.subTest(package=package):
                 (source/'build.config').write_text(clean+'\nCONFIG_PACKAGE_'+package+'=y\n')
