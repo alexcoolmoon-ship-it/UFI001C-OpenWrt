@@ -1,0 +1,150 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Recover a modem wedged inside ModemManager after a modem subsystem restart
+# (modem object stuck in "failed" state, e.g. sim-missing, or never created).
+# netifd interface restarts cannot clear that state; only a fresh ModemManager
+# enumeration can. Ladder: restart ModemManager (bounded), then at most one
+# reboot per failure episode. Never changes radio, APN, bands or network
+# configuration. Timers use monotonic uptime; the reboot flag is persistent so
+# a reboot loop is impossible: it is cleared only by a connected modem.
+set -u
+state=/var/run/ufi-modem-watchdog.state
+lock=/var/run/ufi-modem-watchdog.lock
+flagdir=/etc/ufi-modem-watchdog
+flag=$flagdir/reboot-used
+reason='not checked'
+say() { printf '%s\n' "MODEM-WATCHDOG: $*"; }
+cfg() { uci -q get "$1" 2>/dev/null || true; }
+now_s() { cut -d. -f1 /proc/uptime; }
+
+# Thresholds (seconds). A modem in an explicit failed/missing state gets the
+# short threshold: ModemManager never leaves "failed" on its own. Any other
+# not-connected state may still be a slow registration, so it gets longer.
+BOOT_GRACE=300
+BAD_FAILED=120
+BAD_OTHER=300
+ACTION_COOLDOWN=240
+MM_WINDOW=3600
+MM_MAX=3
+
+eligible() {
+    [ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = 'thwc,ufi001c' ] || { reason='unsupported board'; return 1; }
+    [ "$(cfg ufi-modem-watchdog.main.enabled)" = 1 ] || { reason='watchdog disabled'; return 1; }
+    [ "$(cfg network.modem.proto)" = modemmanager ] &&
+    [ "$(cfg network.modem.device)" = qcom-soc ] || { reason='different modem configuration'; return 1; }
+    for key in auto autoconnect; do
+        [ "$(cfg network.modem.$key)" != 0 ] || { reason="modem $key disabled"; return 1; }
+    done
+}
+
+# Prints "<state> <failed-reason-or-->: state is "missing" when ModemManager
+# has no modem object at all (mmcli errors or returns nothing usable).
+modem_state() {
+    out=$(mmcli --modem qcom-soc --timeout 10 --output-json 2>/dev/null) || { printf 'missing -'; return; }
+    printf '%s' "$out" | jq -r '"\(.modem.generic.state // "missing") \(.modem.generic."state-failed-reason" // "-")"' 2>/dev/null ||
+        printf 'missing -'
+}
+
+load_state() {
+    bad_since=0; mm_count=0; mm_window=0; last_action=0
+    [ -f "$state" ] || return 0
+    local extra='' field
+    read -r bad_since mm_count mm_window last_action extra < "$state" || { bad_since=0; mm_count=0; mm_window=0; last_action=0; return 0; }
+    [ -z "$extra" ] || { bad_since=0; mm_count=0; mm_window=0; last_action=0; return 0; }
+    for field in "$bad_since" "$mm_count" "$mm_window" "$last_action"; do
+        case "$field" in ''|*[!0-9]*) bad_since=0; mm_count=0; mm_window=0; last_action=0; return 0 ;; esac
+    done
+}
+
+save_state() {
+    printf '%s %s %s %s\n' "$bad_since" "$mm_count" "$mm_window" "$last_action" > "$state.tmp.$$" &&
+        mv "$state.tmp.$$" "$state"
+}
+
+take_lock() {
+    if ! mkdir "$lock" 2>/dev/null; then
+        oldpid=$(cat "$lock/pid" 2>/dev/null || true)
+        case "$oldpid" in ''|*[!0-9]*) return 1 ;; esac
+        kill -0 "$oldpid" 2>/dev/null && return 1
+        rm -f "$lock/pid"
+        rmdir "$lock" 2>/dev/null || return 1
+        mkdir "$lock" 2>/dev/null || return 1
+    fi
+    echo $$ > "$lock/pid"
+    trap 'rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null || true' EXIT
+    trap 'exit 1' INT TERM HUP
+}
+
+check() {
+    eligible || { say "$reason"; return 1; }
+    take_lock || { say 'another check is running'; return 1; }
+    local st mstate freason now bad_for threshold
+    st=$(modem_state); mstate=${st%% *}; freason=${st#* }
+    now=$(now_s)
+    load_state
+    if [ "$mstate" = connected ]; then
+        [ "$bad_since" -eq 0 ] && [ ! -f "$flag" ] || {
+            logger -t ufi-modem-watchdog "Modem connected; failure episode closed"
+            rm -f "$flag"
+            bad_since=0; mm_count=0; mm_window=0; last_action=0; save_state
+        }
+        reason='modem connected'
+        return 0
+    fi
+    reason="modem state=$mstate reason=$freason"
+    [ "$now" -ge $BOOT_GRACE ] || { say "$reason; boot grace period"; return 0; }
+    if [ "$bad_since" -eq 0 ]; then
+        bad_since=$now; save_state
+        say "$reason; bad timer started"
+        return 0
+    fi
+    bad_for=$((now - bad_since))
+    case "$mstate" in
+        failed|missing) threshold=$BAD_FAILED ;;
+        *) threshold=$BAD_OTHER ;;
+    esac
+    [ "$bad_for" -ge "$threshold" ] || { say "$reason; bad for ${bad_for}s (< ${threshold}s)"; return 0; }
+    [ $((now - last_action)) -ge $ACTION_COOLDOWN ] || { say "$reason; action cooldown"; return 0; }
+    # Rolling window for ModemManager restarts.
+    if [ "$mm_window" -eq 0 ] || [ $((now - mm_window)) -ge $MM_WINDOW ]; then
+        mm_window=$now; mm_count=0
+    fi
+    if [ "$mm_count" -lt $MM_MAX ]; then
+        mm_count=$((mm_count + 1)); last_action=$now; bad_since=$now; save_state
+        logger -t ufi-modem-watchdog "Restarting ModemManager ($mm_count/$MM_MAX in window): $reason, bad for ${bad_for}s"
+        say "restarting ModemManager: $reason"
+        /etc/init.d/modemmanager restart >/dev/null 2>&1 || { say 'ModemManager restart failed'; return 1; }
+        return 0
+    fi
+    # Last resort: one reboot per failure episode. The persistent flag is
+    # cleared only when a later check sees the modem connected.
+    if [ "$(cfg ufi-modem-watchdog.main.allow_reboot)" != 0 ] && [ ! -f "$flag" ]; then
+        mkdir -p "$flagdir" || return 1
+        : > "$flag" || return 1
+        sync
+        logger -t ufi-modem-watchdog "ModemManager restarts exhausted ($reason); rebooting once for this episode"
+        say "rebooting: $reason"
+        reboot
+        return 0
+    fi
+    say "$reason; ModemManager restart budget exhausted, reboot already used or disallowed; giving up"
+    return 1
+}
+
+case "${1:-status}" in
+    status)
+        eligible || { say "$reason"; exit 1; }
+        st=$(modem_state)
+        load_state
+        say "modem: $st; bad_since=$bad_since mm_restarts=$mm_count reboot_flag=$([ -f "$flag" ] && echo used || echo clear)"
+        ;;
+    check) check ;;
+    watch)
+        sleep 120
+        while :; do
+            "$0" check >/dev/null 2>&1 || true
+            sleep 30
+        done
+        ;;
+    *) say 'usage: ufi-modem-watchdog [status|check|watch]'; exit 2 ;;
+esac
