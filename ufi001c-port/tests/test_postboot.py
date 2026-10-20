@@ -179,6 +179,7 @@ class PostbootCheck(unittest.TestCase):
         for release, expected in (('UFI001C v3.2.1 Clean / OpenWrt 25.12.5',0),
                                   ('UFI001C v3.2.2 Clean / OpenWrt 25.12.5',0),
                                   ('UFI001C v3.2.3 Clean / OpenWrt 25.12.5',0),
+                                  ('UFI001C v3.2.4 Clean / OpenWrt 25.12.5',0),
                                   ('UFI001C v3.2.0 Final Candidate / OpenWrt 25.12.5',1)):
             (self.p/'release').write_text(release+'\n')
             p=subprocess.run(['sh','-c',source+'\nclean_profile'],env=self.env,capture_output=True,text=True)
