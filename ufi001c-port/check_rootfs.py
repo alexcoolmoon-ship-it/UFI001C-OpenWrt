@@ -13,6 +13,11 @@ FILES = {
     'etc/hotplug.d/gcrestart/restart_gc.sh': 'overlay/package/openstick/gc/files/restart_gc.sh',
     'etc/config/gc': 'overlay/package/openstick/gc/files/gc.uci',
     'etc/ufi001c-release': 'clean/ufi001c-release',
+    'usr/sbin/ufi-lte-health': 'overlay/package/openstick/ufi-lte-health/files/ufi-lte-health',
+    'etc/init.d/ufi-lte-health': 'overlay/package/openstick/ufi-lte-health/files/init',
+    'usr/share/ufi-lte-health/session.jq': 'overlay/package/openstick/ufi-lte-health/files/session.jq',
+    'usr/sbin/ufi-modem-watchdog': 'overlay/package/openstick/ufi-modem-watchdog/files/ufi-modem-watchdog',
+    'etc/init.d/ufi-modem-watchdog': 'overlay/package/openstick/ufi-modem-watchdog/files/init',
     'etc/init.d/sing-box': 'overlay/package/openstick/podkop-engine/files/sing-box.init',
     'etc/uci-defaults/99-ufi001c-addons': 'clean/99-ufi001c-addons',
 }
@@ -34,7 +39,6 @@ for package, source_subdir, destination in (
 
 FORBIDDEN = (
     'usr/sbin/ufi-care', 'etc/init.d/ufi-care',
-    'usr/sbin/ufi-lte-health', 'etc/init.d/ufi-lte-health',
     'etc/init.d/ufi-dns-health', 'usr/lib/podkop/ufi_dns_health.sh',
     'usr/lib/podkop/ufi_dns_tunnel.sh', 'usr/lib/podkop/ufi_startup.sh',
     'usr/sbin/apk', 'usr/libexec/ufi-service-fetch',
