@@ -7,7 +7,7 @@ import shutil
 
 HERE = Path(__file__).resolve().parent
 CLEAN = HERE / 'clean'
-REMOVED_PACKAGES = ('ufi-care', 'ufi-lte-health', 'ufi-service-proxy', 'zapret-ufi')
+REMOVED_PACKAGES = ('ufi-care', 'ufi-service-proxy', 'zapret-ufi')
 
 
 def verify_source():
