@@ -25,6 +25,8 @@ required = [
     "PACKAGE_qrtr-ns",
     "PACKAGE_gc",
     "PACKAGE_ufi001c-defaults",
+    "PACKAGE_ufi-lte-health",
+    "PACKAGE_ufi-modem-watchdog",
     "PACKAGE_podkop",
     "PACKAGE_luci-app-podkop",
     "PACKAGE_luci-i18n-podkop-ru",
@@ -44,7 +46,7 @@ if cache_dir != '""':
 if "CONFIG_TARGET_ROOTFS_SQUASHFS=y\n" in text:
     raise SystemExit("This first port requires ext4, not squashfs")
 for package in ('sing-box', 'sing-box-tiny', 'podkop-engine-full',
-                'ufi-care', 'ufi-lte-health', 'ufi-service-proxy', 'zapret-ufi'):
+                'ufi-care', 'ufi-service-proxy', 'zapret-ufi'):
     if f'CONFIG_PACKAGE_{package}=y\n' in text:
         raise SystemExit('Unexpected package in clean profile: ' + package)
 print("UFI001C configuration checks passed")
