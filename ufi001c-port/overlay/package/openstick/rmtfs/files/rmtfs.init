@@ -2,7 +2,7 @@
 # Copyright (c) 2020 - 2021 HandsomeMod Project
 # Distributed under the terms of the GNU General Purpose License v2
 
-START=80
+START=65
 STOP=99
 
 USE_PROCD=1
