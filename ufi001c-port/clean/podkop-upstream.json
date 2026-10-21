@@ -36,7 +36,7 @@
     "podkop/files/etc/config/podkop": "71282f4491dd35c0ff8ff29ddc483ff0faf23a4a3cf318f9ca002d28dca18e84",
     "podkop/files/etc/init.d/podkop": "2975526b92f63281ead7c6fc508f36f221dbe65dffc6deb37b1809ef327383ff",
     "podkop/files/etc/uci-defaults/51_ufi001c-wifi-password": "8d2847fc0afb1d336e52ecfe71e39c4868216eee6c656a89b493c4c313fa89d3",
-    "podkop/files/usr/bin/podkop": "5a2b69c5eae196f877d4bdb42b00b73ae182a0b87695873002974051025b6873",
+    "podkop/files/usr/bin/podkop": "ece1e9d6ab22e135e5ea7ab604a98191fc58d6eb9d51450c69a3ce398a6d4eed",
     "podkop/files/usr/lib/sing_box_config_facade.sh": "1a3ce556bfcb6be980292f1af5e322c05ac12236566f9dc3ba01786db2017a01",
     "podkop/files/usr/lib/sing_box_config_manager.sh": "4c0a055a7ce45aa633a4d517288306435352f2676d2e2be263b401750528bded"
   },
