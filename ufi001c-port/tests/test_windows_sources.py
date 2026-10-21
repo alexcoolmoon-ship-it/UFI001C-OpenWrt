@@ -53,5 +53,19 @@ class WindowsSourcesTests(unittest.TestCase):
                 with self.assertRaises(ValueError): builder.export_loaders(lock,self.root)
                 fetch.assert_not_called()
 
+    def test_edl_missing_libusb_dll_fails_with_actionable_message(self):
+        spec = importlib.util.spec_from_file_location(
+            'windows_edl', PORT / 'migration/windows_edl.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        windows = self.root / 'edlclient' / 'Windows'
+        windows.mkdir(parents=True)
+        err = io.StringIO()
+        with patch('sys.stderr', err):
+            rc = module._ensure_usb_backend(windows)
+        self.assertEqual(rc, 1)
+        self.assertIn('libusb-1.0.dll', err.getvalue())
+        self.assertIn(str(windows / 'libusb-1.0.dll'), err.getvalue())
+
 
 if __name__=='__main__': unittest.main()
