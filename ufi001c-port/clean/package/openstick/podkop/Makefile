@@ -52,6 +52,9 @@ define Package/podkop/install
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/etc/config/podkop $(1)/etc/config/podkop
 
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) ./files/etc/uci-defaults/51_ufi001c-wifi-password $(1)/etc/uci-defaults/51_ufi001c-wifi-password
+
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) ./files/usr/bin/podkop $(1)/usr/bin/podkop
 
