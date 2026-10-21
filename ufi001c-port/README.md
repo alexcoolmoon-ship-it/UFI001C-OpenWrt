@@ -1,6 +1,6 @@
-# UFI001C v3.2.4 Clean
+# UFI001C v3.2.5 Clean
 
-[README проекта](../README.md) · [Установка](INSTALL-RU.md) · [Изменения](RELEASE-NOTES-v3.2.4.md)
+[README проекта](../README.md) · [Установка](INSTALL-RU.md) · [Изменения](RELEASE-NOTES-v3.2.5.md)
 
 Официальная база OpenWrt 25.12.5, Podkop 0.7.24 с минимальной DNS-правкой.
 Состав чистого профиля находится в clean/ и выбирается prepare_clean.py.
