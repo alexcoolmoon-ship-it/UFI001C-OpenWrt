@@ -190,8 +190,8 @@ start_main() {
 
     # base
     br_netfilter_disable
-    route_table_rule_mark
-    create_nft_rules
+    route_table_rule_mark || { log "Policy routing install failed; aborting start" "fatal"; return 1; }
+    create_nft_rules || { log "nft rules install failed; aborting start" "fatal"; return 1; }
     sing_box_configure_service
 
     # sing-box
@@ -208,7 +208,9 @@ stop_main() {
 
     if [ -f /var/run/podkop_list_update.pid ]; then
         pid=$(cat /var/run/podkop_list_update.pid)
-        if kill -0 "$pid" 2> /dev/null; then
+        # Never kill a recycled PID: verify it is still our list_update.
+        if [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] && \
+           tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "podkop list_update"; then
             kill "$pid" 2> /dev/null
             log "Stopped list_update"
         fi
@@ -221,7 +223,10 @@ stop_main() {
 
     log "Flush nft"
     if nft list table inet "$NFT_TABLE_NAME" > /dev/null 2>&1; then
-        nft delete table inet "$NFT_TABLE_NAME"
+        nft delete table inet "$NFT_TABLE_NAME" || {
+            log "Failed to delete nft table $NFT_TABLE_NAME; aborting stop to avoid split state" "error"
+            return 1
+        }
     fi
 
     log "Flush ip rule"
@@ -239,6 +244,7 @@ stop_main() {
 }
 
 start() {
+    podkop_acquire_lock || return 1
     start_main || return 1
 
     config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
@@ -251,25 +257,31 @@ start() {
 }
 
 stop() {
+    podkop_acquire_lock || return 1
     local dont_touch_dhcp
     config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
     if [ "$dont_touch_dhcp" -eq 0 ]; then
         dnsmasq_restore
     fi
 
-    stop_main
+    if ! stop_main; then
+        log "stop_main failed; keeping shutdown_correctly=0" "warn"
+        return 1
+    fi
 
     uci_set "podkop" "settings" "shutdown_correctly" 1
     uci commit "podkop" && config_load "$PODKOP_CONFIG"
 }
 
 reload() {
+    podkop_acquire_lock || return 1
     log "Podkop reload"
-    stop_main
-    start_main
+    stop_main || return 1
+    start_main || return 1
 }
 
 restart() {
+    podkop_acquire_lock || return 1
     log "Podkop restart"
     stop
     start
@@ -312,19 +324,45 @@ br_netfilter_disable() {
 
 # Main funcs
 
+# Serialize lifecycle operations. Concurrent start/stop (procd config
+# trigger vs manual restart, or a restart landing mid-start) used to tear
+# down nftables/policy-routing while another instance was rebuilding them,
+# leaving the split state "nft table present, policy routing gone".
+podkop_acquire_lock() {
+    local lockdir=/var/run/ufi-podkop.lock owner=""
+    if mkdir "$lockdir" 2>/dev/null; then
+        echo $$ > "$lockdir/pid"
+    else
+        [ -r "$lockdir/pid" ] && owner=$(cat "$lockdir/pid" 2>/dev/null)
+        # Re-entrant: restart() calls stop() then start() in one process.
+        [ "$owner" = "$$" ] && return 0
+        if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+            log "Another podkop lifecycle operation (pid $owner) is in progress; refusing" "warn"
+            return 1
+        fi
+        log "Removing stale podkop lifecycle lock" "warn"
+        rm -rf "$lockdir"
+        mkdir "$lockdir" 2>/dev/null || return 1
+        echo $$ > "$lockdir/pid"
+    fi
+    trap 'rm -rf /var/run/ufi-podkop.lock' EXIT
+}
+
 route_table_rule_mark() {
     grep -q "105 $RT_TABLE_NAME" /etc/iproute2/rt_tables || echo "105 $RT_TABLE_NAME" >> /etc/iproute2/rt_tables
 
     if ! ip route list table "$RT_TABLE_NAME" 2> /dev/null | grep -q "local default dev lo scope host"; then
         log "Added route for tproxy" "debug"
-        ip route add local 0.0.0.0/0 dev lo table "$RT_TABLE_NAME"
+        ip route add local 0.0.0.0/0 dev lo table "$RT_TABLE_NAME" || return 1
     else
         log "Route for tproxy exists" "debug"
     fi
 
-    if ! ip rule list | grep -q "from all fwmark $NFT_FAKEIP_MARK/$NFT_FAKEIP_MARK lookup $RT_TABLE_NAME"; then
+    # iproute2 prints the mark normalized (0x100000) and the table by name;
+    # match that form so a second start does not stack a duplicate rule.
+    if ! ip rule list 2>/dev/null | grep -Eq "from all fwmark 0x0*100000/0x0*100000 lookup ($RT_TABLE_NAME|105)( |$)"; then
         log "Create marking rule" "debug"
-        ip -4 rule add fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105
+        ip -4 rule add fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105 || return 1
     else
         log "Marking rule exist" "debug"
     fi
@@ -343,7 +381,10 @@ nft_init_interfaces_set() {
 
 create_nft_rules() {
     log "Create nft table"
-    nft_create_table "$NFT_TABLE_NAME"
+    # Idempotent: a previous torn-down start may have left a partial table;
+    # rebuilding on top of it would stack duplicate rules.
+    nft delete table inet "$NFT_TABLE_NAME" 2>/dev/null
+    nft_create_table "$NFT_TABLE_NAME" || return 1
 
     log "Create localv4 set"
     nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_LOCALV4_SET_NAME"
@@ -396,6 +437,15 @@ create_nft_rules() {
         log "NTP traffic exclude for proxy"
         nft insert rule inet "$NFT_TABLE_NAME" mangle udp dport 123 return
     fi
+
+    # Verify the interception path is complete before sing-box starts.
+    local chain
+    for chain in mangle mangle_output proxy; do
+        nft list chain inet "$NFT_TABLE_NAME" "$chain" >/dev/null 2>&1 || {
+            log "nft chain $chain missing after creation" "error"
+            return 1
+        }
+    done
 }
 
 backup_dnsmasq_config_option() {
@@ -410,34 +460,57 @@ backup_dnsmasq_config_option() {
 }
 
 dnsmasq_configure() {
-    local shutdown_correctly
-    config_get shutdown_correctly "settings" "shutdown_correctly"
-    if [ "$shutdown_correctly" -eq 0 ]; then
-        log "Previous shutdown of podkop was not correct, reconfiguration of dnsmasq is not required"
-        return 0
+    # Always converge dnsmasq to the Podkop state on every start. The old
+    # code skipped this entirely after an unclean shutdown (and the shipped
+    # default of shutdown_correctly is 0), which left dnsmasq permanently
+    # pointed away from the Podkop DNS: clients then resolved outside the
+    # tunnel, got real IPs, and their traffic never matched the nftables
+    # mangle rules. Backups of the original values are taken only once, so
+    # repeated runs cannot clobber them with Podkop's own values.
+    log "Configure dnsmasq for sing-box"
+
+    local backup_done=0
+    if [ -n "$(uci_get "dhcp" "@dnsmasq[0]" "podkop_server")" ] || \
+       [ -n "$(uci_get "dhcp" "@dnsmasq[0]" "podkop_noresolv")" ] || \
+       [ -n "$(uci_get "dhcp" "@dnsmasq[0]" "podkop_cachesize")" ]; then
+        backup_done=1
     fi
 
-    log "Backup dnsmasq configuration"
-    current_servers="$(uci_get "dhcp" "@dnsmasq[0]" "server")"
-    if [ -n "$current_servers" ]; then
+    if [ "$backup_done" -eq 0 ]; then
+        log "Backup dnsmasq configuration" "debug"
+        local server
         for server in $(uci_get "dhcp" "@dnsmasq[0]" "server"); do
-            if ! [ "$server" == "$SB_DNS_INBOUND_ADDRESS" ]; then
+            if ! [ "$server" = "$SB_DNS_INBOUND_ADDRESS" ]; then
                 uci_add_list "dhcp" "@dnsmasq[0]" "podkop_server" "$server"
             fi
         done
-        uci_remove "dhcp" "@dnsmasq[0]" "server"
+        backup_dnsmasq_config_option "noresolv" "podkop_noresolv"
+        backup_dnsmasq_config_option "cachesize" "podkop_cachesize"
     fi
 
-    backup_dnsmasq_config_option "noresolv" "podkop_noresolv"
-    backup_dnsmasq_config_option "cachesize" "podkop_cachesize"
+    local changed=0
+    local servers
+    servers="$(uci_get "dhcp" "@dnsmasq[0]" "server")"
+    if [ "$servers" != "$SB_DNS_INBOUND_ADDRESS" ]; then
+        uci_remove "dhcp" "@dnsmasq[0]" "server"
+        uci_add_list "dhcp" "@dnsmasq[0]" "server" "$SB_DNS_INBOUND_ADDRESS"
+        changed=1
+    fi
+    if [ "$(uci_get "dhcp" "@dnsmasq[0]" "noresolv")" != "1" ]; then
+        uci_set "dhcp" "@dnsmasq[0]" "noresolv" 1
+        changed=1
+    fi
+    if [ "$(uci_get "dhcp" "@dnsmasq[0]" "cachesize")" != "0" ]; then
+        uci_set "dhcp" "@dnsmasq[0]" "cachesize" 0
+        changed=1
+    fi
 
-    log "Configure dnsmasq for sing-box"
-    uci_add_list "dhcp" "@dnsmasq[0]" "server" "$SB_DNS_INBOUND_ADDRESS"
-    uci_set "dhcp" "@dnsmasq[0]" "noresolv" 1
-    uci_set "dhcp" "@dnsmasq[0]" "cachesize" 0
-    uci_commit "dhcp"
-
-    /etc/init.d/dnsmasq restart
+    if [ "$changed" -eq 1 ]; then
+        uci_commit "dhcp"
+        /etc/init.d/dnsmasq restart
+    else
+        log "dnsmasq already configured for sing-box" "debug"
+    fi
 }
 
 dnsmasq_restore() {
@@ -537,7 +610,12 @@ add_cron_job() {
 }
 
 remove_cron_job() {
-    (crontab -l | grep -v "/usr/bin/podkop list_update") | crontab -
+    local cur
+    # Never push empty input into crontab: with no crontab installed,
+    # `crontab -l` fails and the old pipeline wiped the whole root crontab
+    # on every stop.
+    cur=$(crontab -l 2>/dev/null) || { log "The cron job removed"; return 0; }
+    printf '%s\n' "$cur" | grep -v "/usr/bin/podkop list_update" | crontab -
     log "The cron job removed"
 }
 
@@ -2170,6 +2248,7 @@ check_dns_available() {
 
     # Check if /etc/config/dhcp has server 127.0.0.42
     config_load dhcp
+    _podkop_dhcp_checked=0
     config_foreach check_dhcp_has_podkop_dns dnsmasq
     config_load "$PODKOP_CONFIG"
 
@@ -2177,6 +2256,11 @@ check_dns_available() {
 }
 
 check_dhcp_has_podkop_dns() {
+    # Only the primary dnsmasq instance is managed by podkop
+    # (dnsmasq_configure touches @dnsmasq[0]); extra sections, e.g. for a
+    # guest wifi, must not fail the check.
+    [ "$_podkop_dhcp_checked" = 1 ] && return 0
+    _podkop_dhcp_checked=1
     local server_list cachesize noresolv server_found
     config_get server_list "$1" "server"
     config_get cachesize "$1" "cachesize"
@@ -2355,7 +2439,9 @@ check_fakeip() {
             if(v){print; exit}}') || router_answer=''
     [ -z "$answer" ] || local_ok=true
     [ -z "$router_answer" ] || router_ok=true
-    if ip -4 rule show 2>/dev/null | grep -Eq 'fwmark 0x100000/0x100000.*lookup 105|lookup 105.*fwmark 0x100000/0x100000' \
+    # The installer registers the table by name ("lookup podkop"); accept
+    # both the name and the numeric id, otherwise the check can never pass.
+    if ip -4 rule show 2>/dev/null | grep -Eq "fwmark 0x100000/0x100000.*lookup ($RT_TABLE_NAME|105)( |$)" \
        && ip -4 route show table 105 2>/dev/null | grep -Eq '^local (default|0\.0\.0\.0/0) dev lo( |$)'; then
         route_ok=true
     fi
@@ -2834,7 +2920,6 @@ Available commands:
     stop                    Stop podkop service
     reload                  Reload podkop configuration
     restart                 Restart podkop service
-    main                    Run main podkop process
     list_update             Update domain lists
     check_proxy             Check proxy connectivity
     check_nft               Check NFT rules
@@ -2993,9 +3078,6 @@ reload)
     ;;
 restart)
     restart
-    ;;
-main)
-    main
     ;;
 list_update)
     list_update
