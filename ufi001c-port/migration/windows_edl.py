@@ -7,6 +7,42 @@ import runpy
 import sys
 
 
+def _ensure_usb_backend(windows):
+    """Fail fast with an actionable message instead of a cryptic traceback.
+
+    The frozen exe ships libusb-1.0.dll next to it and patches
+    ctypes.util.find_library (see main()). If the DLL is missing on the
+    user's PC (antivirus quarantine, partial archive extraction) or cannot
+    be loaded, pyusb reports "NoBackendError: No backend available" deep
+    inside the upstream client. Catch it here and explain what to check.
+    Returns 0 when the backend is usable, 1 otherwise.
+    """
+    dll = windows / 'libusb-1.0.dll'
+    if not dll.is_file():
+        sys.stderr.write(
+            'ОШИБКА: не найден libusb-1.0.dll в каталоге программы.\n'
+            'Проверьте, что ZIP-архив распакован ПОЛНОСТЬЮ (включая подкаталог\n'
+            "'_internal'), и что антивирус не отправил DLL в карантин.\n"
+            f'Ожидаемый путь: {dll}\n'
+        )
+        return 1
+    import usb.backend.libusb1
+    try:
+        backend_ok = usb.backend.libusb1.get_backend() is not None
+    except Exception:
+        backend_ok = False
+    if not backend_ok:
+        sys.stderr.write(
+            'ОШИБКА: libusb-1.0.dll найден, но pyusb не смог его загрузить\n'
+            '(обычно блокирует антивирус или SmartScreen).\n'
+            f'Путь: {dll}\n'
+            'Добавьте каталог программы в исключения антивируса и\n'
+            'разблокируйте DLL в свойствах файла при необходимости.\n'
+        )
+        return 1
+    return 0
+
+
 def main():
     sys.dont_write_bytecode = True
     for stream in (sys.stdout, sys.stderr):
@@ -55,6 +91,10 @@ def main():
             raise ValueError('EDL USB backend not discoverable via default find_library patch')
         print('PORTABLE_EDL_SELF_TEST_OK (no USB commands performed)')
         return 0
+    if os.name == 'nt':
+        rc = _ensure_usb_backend(windows)
+        if rc:
+            return rc
     sys.argv[0] = str(root / 'edl.py')
     # The upstream code and Firehose command implementation are not patched.
     runpy.run_path(sys.argv[0], run_name='__main__')
