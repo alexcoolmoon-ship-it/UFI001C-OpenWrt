@@ -963,7 +963,13 @@ sing_box_configure_dns() {
     else
         config=$(sing_box_cm_add_tcp_dns_server "$config" "$SB_BOOTSTRAP_SERVER_TAG" "$bootstrap_dns_server" 53)
     fi
-    config=$(sing_box_cf_add_dns_server "$config" "$dns_type" "$SB_DNS_SERVER_TAG" "$dns_server" "$dns_domain_resolver")
+    # 1.1.1.1/8.8.8.8 DoH MUST go through the tunnel (detour) — the operator
+    # blocks direct DoH. Yandex (77.88.8.8) stays direct (bootstrap).
+    local dns_detour=""
+    case "$dns_server_address" in
+        1.1.1.1|8.8.8.8|1.0.0.1|8.8.4.4) dns_detour="$(get_outbound_tag_by_section "main")" ;;
+    esac
+    config=$(sing_box_cf_add_dns_server "$config" "$dns_type" "$SB_DNS_SERVER_TAG" "$dns_server" "$dns_domain_resolver" "$dns_detour")
     config=$(sing_box_cm_add_fakeip_dns_server "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_INET4_RANGE")
 
     log "Adding DNS Rules"
@@ -2213,19 +2219,16 @@ check_dns_available() {
         display_dns_server="1.1.1.1 (proxy)"
         if cloudflare_doh_query_ok; then dns_status=1; fi
     elif [ "$dns_type" = "doh" ]; then
-        # Check if dns_server already contains a path
-        local doh_path="/dns-query"
-        if echo "$dns_server" | grep -q "/"; then
-            # Path is already present, extract it
-            doh_path="/$(echo "$dns_server" | cut -d'/' -f2-)"
-            dns_server="$(echo "$dns_server" | cut -d'/' -f1)"
-        fi
-
-        if dns_query_ok @"$dns_server" "$domain" A +https="$doh_path" +timeout=4 +tries=1; then
+        # The operator blocks 1.1.1.1 directly; DoH must go through the proxy
+        # tunnel. Query sing-box DNS (127.0.0.42), which does DoH via the
+        # outbound — a direct dig @1.1.1.1 would fail even when everything
+        # works. FakeIP answers (198.18.x.x) count as success.
+        if dns_query_ok @"$SB_DNS_INBOUND_ADDRESS" "$domain" A +timeout=4 +tries=1; then
             dns_status=1
         fi
     elif [ "$dns_type" = "dot" ]; then
-        if dns_query_ok @"$dns_server" "$domain" A +tls +timeout=4 +tries=1; then
+        # Same: direct 1.1.1.1 is blocked, go through sing-box.
+        if dns_query_ok @"$SB_DNS_INBOUND_ADDRESS" "$domain" A +timeout=4 +tries=1; then
             dns_status=1
         fi
     elif [ "$dns_type" = "udp" ]; then
