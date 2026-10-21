@@ -17,7 +17,6 @@
     "luci-app-podkop/xgettext.sh": "699b5fb41741b0be5da110da89e9936a9170ee7baf8049e25ba6ed39dbbbe340",
     "podkop/Makefile": "a41816d6698116fb50985da2a051c7ca20e6e1e6a9f7a152df843c48eaf35b58",
     "podkop/files/etc/config/podkop": "0cd47998df9efbb3d380e24c585a40f216e4541d0e86ab7d65b404e236652924",
-    "podkop/files/etc/init.d/podkop": "81398850e3481bc6c75f10cc2885529d36b49b0c91c32caf57f54467cbc8cbc2",
     "podkop/files/usr/bin/podkop": "5d245acb092884a40ed97699e7760b031be7399af8734fa63547b5f31c0d980d",
     "podkop/files/usr/lib/constants.sh": "e1f559baa0ffdc202fefa78622f6d61887b84505a563f127b5053b4e61c424f6",
     "podkop/files/usr/lib/helpers.jq": "e1f9a431adc6de14793323eb26303b64380f93c0eda73441261448e74c8940a4",
@@ -35,6 +34,7 @@
     "luci-app-podkop/po/templates/podkop.pot": "ae72af1393587717272a36df7bf3aef411603af424f5dac7c4e97122593081fc",
     "podkop/Makefile": "df5233f3da17d5c7f75824e2b02b33b6e528200bf8cb0a41d569b3dad79bb4aa",
     "podkop/files/etc/config/podkop": "71282f4491dd35c0ff8ff29ddc483ff0faf23a4a3cf318f9ca002d28dca18e84",
+    "podkop/files/etc/init.d/podkop": "2975526b92f63281ead7c6fc508f36f221dbe65dffc6deb37b1809ef327383ff",
     "podkop/files/usr/bin/podkop": "379aae2982d953f649cac4a6183ac589ba0574488e80d641199580954a607aee",
     "podkop/files/usr/lib/sing_box_config_facade.sh": "1a3ce556bfcb6be980292f1af5e322c05ac12236566f9dc3ba01786db2017a01",
     "podkop/files/usr/lib/sing_box_config_manager.sh": "4c0a055a7ce45aa633a4d517288306435352f2676d2e2be263b401750528bded"
