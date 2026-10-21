@@ -8,24 +8,26 @@ import sys
 
 
 def _ensure_usb_backend(windows):
-    """Fail fast with an actionable message instead of a cryptic traceback.
+    """Warn with an actionable message instead of a cryptic traceback.
 
     The frozen exe ships libusb-1.0.dll next to it and patches
     ctypes.util.find_library (see main()). If the DLL is missing on the
     user's PC (antivirus quarantine, partial archive extraction) or cannot
     be loaded, pyusb reports "NoBackendError: No backend available" deep
-    inside the upstream client. Catch it here and explain what to check.
-    Returns 0 when the backend is usable, 1 otherwise.
+    inside the upstream client. Print what to check here.
+
+    Never aborts: on locked-down machines (e.g. CI runners) the DLL may
+    exist but refuse to load, while --self-test/--help still work fine.
     """
     dll = windows / 'libusb-1.0.dll'
     if not dll.is_file():
         sys.stderr.write(
-            'ОШИБКА: не найден libusb-1.0.dll в каталоге программы.\n'
+            'ПРЕДУПРЕЖДЕНИЕ: не найден libusb-1.0.dll в каталоге программы.\n'
             'Проверьте, что ZIP-архив распакован ПОЛНОСТЬЮ (включая подкаталог\n'
             "'_internal'), и что антивирус не отправил DLL в карантин.\n"
             f'Ожидаемый путь: {dll}\n'
         )
-        return 1
+        return 0
     import usb.backend.libusb1
     try:
         backend_ok = usb.backend.libusb1.get_backend() is not None
@@ -33,13 +35,12 @@ def _ensure_usb_backend(windows):
         backend_ok = False
     if not backend_ok:
         sys.stderr.write(
-            'ОШИБКА: libusb-1.0.dll найден, но pyusb не смог его загрузить\n'
+            'ПРЕДУПРЕЖДЕНИЕ: libusb-1.0.dll найден, но pyusb не смог его загрузить\n'
             '(обычно блокирует антивирус или SmartScreen).\n'
             f'Путь: {dll}\n'
             'Добавьте каталог программы в исключения антивируса и\n'
             'разблокируйте DLL в свойствах файла при необходимости.\n'
         )
-        return 1
     return 0
 
 
