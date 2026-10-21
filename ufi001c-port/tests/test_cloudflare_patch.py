@@ -211,7 +211,8 @@ config_set main proxy_string "$test_link"
     def test_mode_off_keeps_native_dns_without_service_listener(self):
         p, data = self.generate('config_set settings cloudflare_dns_patch 0')
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertNotIn('detour', next(s for s in data['dns']['servers'] if s['tag']=='dns-server'))
+        # v3.2.7+: public DNS (1.1.1.1) goes via tunnel even without cloudflare patch
+        self.assertEqual(next(s for s in data['dns']['servers'] if s['tag']=='dns-server')['detour'], 'main-out')
         self.assertFalse(any(i['tag']=='service-mixed-in' for i in data['inbounds']))
 
     def test_cloudflare_button_status_does_not_pass_when_disabled_or_probe_fails(self):
