@@ -153,7 +153,9 @@ foreach_configured_section show_name
 
     def test_first_start_configures_dnsmasq_and_subsequent_start_does_not_duplicate_backup(self):
         # Use the actual shipped UCI defaults and production start/DHCP logic.
-        # Replace service/uci writes with a stateful recorder in this process.
+        # The shipped default has shutdown_correctly=0 (unclean shutdown):
+        # dnsmasq must still be configured. A stateful fake UCI models the
+        # section so repeated starts converge instead of reconfiguring.
         config_path = CLEAN / 'package/openstick/podkop/files/etc/config/podkop'
         functions = FUNCTIONS.replace('/etc/init.d/dnsmasq', 'test_dnsmasq')
         script = '\n'.join([
@@ -162,19 +164,44 @@ foreach_configured_section show_name
             'log() { printf "%s\\n" "$1" >&2; }',
             'SB_DNS_INBOUND_ADDRESS=127.0.0.42',
             'config_load() { :; }; start_main() { :; }',
-            'uci_get() { case "$3" in server) echo 9.9.9.9;; noresolv) echo 0;; cachesize) echo 150;; esac; }',
-            'uci_set() { printf "SET %s %s %s %s\\n" "$1" "$2" "$3" "$4"; [ "$1" != podkop ] || config_set "$2" "$3" "$4"; }',
-            'uci_add_list() { printf "ADD_LIST %s %s %s %s\\n" "$1" "$2" "$3" "$4"; }',
-            'uci_commit() { :; }; uci_remove() { :; }; uci() { :; }',
+            '_dhcp_server="9.9.9.9"; _dhcp_noresolv=0; _dhcp_cachesize=150',
+            '_dhcp_podkop_server=""; _dhcp_podkop_noresolv=""; _dhcp_podkop_cachesize=""',
+            'uci_get() { case "$3" in server) echo "$_dhcp_server";; noresolv) echo "$_dhcp_noresolv";; cachesize) echo "$_dhcp_cachesize";; podkop_server) echo "$_dhcp_podkop_server";; podkop_noresolv) echo "$_dhcp_podkop_noresolv";; podkop_cachesize) echo "$_dhcp_podkop_cachesize";; esac; }',
+            'uci_set() { printf "SET %s %s %s %s\\n" "$1" "$2" "$3" "$4"; [ "$1" != podkop ] || config_set "$2" "$3" "$4"; case "$3" in noresolv) _dhcp_noresolv="$4";; cachesize) _dhcp_cachesize="$4";; podkop_noresolv) _dhcp_podkop_noresolv="$4";; podkop_cachesize) _dhcp_podkop_cachesize="$4";; esac; }',
+            'uci_add_list() { printf "ADD_LIST %s %s %s %s\\n" "$1" "$2" "$3" "$4"; case "$3" in server) _dhcp_server="$4";; podkop_server) _dhcp_podkop_server="$4";; esac; }',
+            'uci_remove() { case "$3" in server) _dhcp_server="";; esac; }',
+            'uci_commit() { :; }; uci() { :; }',
             'test_dnsmasq() { echo DNSMASQ_RESTART; }',
             '. ' + shlex.quote(str(config_path)),
-            'start; start',
+            'start; start; start',
         ])
         p = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=10)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stdout.count('ADD_LIST dhcp @dnsmasq[0] server 127.0.0.42'), 1)
         self.assertEqual(p.stdout.count('ADD_LIST dhcp @dnsmasq[0] podkop_server 9.9.9.9'), 1)
+        self.assertEqual(p.stdout.count('SET dhcp @dnsmasq[0] podkop_noresolv 0'), 1)
+        self.assertEqual(p.stdout.count('SET dhcp @dnsmasq[0] podkop_cachesize 150'), 1)
         self.assertEqual(p.stdout.count('DNSMASQ_RESTART'), 1)
+
+    def test_policy_route_check_accepts_table_name(self):
+        # Regression: the installer registers the fwmark rule with the table
+        # NAME ("lookup podkop"); the check must not require the numeric id.
+        script = '\n'.join([
+            '. ' + shlex.quote(str(PORT / 'tests/fixtures/openwrt-functions.sh')),
+            '. ' + shlex.quote(str(LIB / 'constants.sh')),
+            FUNCTIONS,
+            'log() { printf "%s\\n" "$1" >&2; }',
+            'dig() { printf "198.18.0.2\\n"; }',
+            'curl() { return 7; }',
+            'ip() { if [ "$2" = rule ]; then printf "105: from all fwmark 0x100000/0x100000 lookup podkop\\n"; else printf "local 0.0.0.0/0 dev lo scope host\\n"; fi; }',
+            'check_fakeip',
+        ])
+        p = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=10)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        data = json.loads(p.stdout)
+        self.assertTrue(data['policy_route'])
+        self.assertTrue(data['local_fakeip'])
+        self.assertTrue(data['dnsmasq_fakeip'])
 
     def test_dns_diagnostics_reject_servfail_and_empty_successful_dig(self):
         for answer in ('ok', 'servfail', 'empty'):
