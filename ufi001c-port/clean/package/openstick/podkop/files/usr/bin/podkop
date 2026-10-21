@@ -332,20 +332,29 @@ podkop_acquire_lock() {
     local lockdir=/var/run/ufi-podkop.lock owner=""
     if mkdir "$lockdir" 2>/dev/null; then
         echo $$ > "$lockdir/pid"
-    else
-        [ -r "$lockdir/pid" ] && owner=$(cat "$lockdir/pid" 2>/dev/null)
-        # Re-entrant: restart() calls stop() then start() in one process.
-        [ "$owner" = "$$" ] && return 0
-        if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
-            log "Another podkop lifecycle operation (pid $owner) is in progress; refusing" "warn"
-            return 1
-        fi
+        trap 'rm -rf /var/run/ufi-podkop.lock' EXIT
+        return 0
+    fi
+    [ -r "$lockdir/pid" ] && owner=$(cat "$lockdir/pid" 2>/dev/null)
+    # Re-entrant: restart() calls stop() then start() in one process.
+    [ "$owner" = "$$" ] && return 0
+    if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+        log "Another podkop lifecycle operation (pid $owner) is in progress; refusing" "warn"
+        return 1
+    fi
+    if [ -n "$owner" ] || [ -d "$lockdir" ]; then
         log "Removing stale podkop lifecycle lock" "warn"
         rm -rf "$lockdir"
-        mkdir "$lockdir" 2>/dev/null || return 1
-        echo $$ > "$lockdir/pid"
+        if mkdir "$lockdir" 2>/dev/null; then
+            echo $$ > "$lockdir/pid"
+            trap 'rm -rf /var/run/ufi-podkop.lock' EXIT
+            return 0
+        fi
     fi
-    trap 'rm -rf /var/run/ufi-podkop.lock' EXIT
+    # Best effort: without a writable lock dir (e.g. a non-root test env)
+    # lifecycle ops must still work; continue without mutual exclusion.
+    log "Cannot create podkop lifecycle lock; continuing without mutual exclusion" "warn"
+    return 0
 }
 
 route_table_rule_mark() {
