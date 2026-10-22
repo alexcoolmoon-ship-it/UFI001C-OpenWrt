@@ -144,7 +144,9 @@ foreach_configured_section() {
 # forever and blocks start_main. Run it in the background and wait at most
 # 30 s (pure shell, no extra packages), then kill it and continue anyway.
 sync_time_ntp() {
-    /usr/sbin/ntpd -q -p 194.190.168.1 -p 216.239.35.0 -p 216.239.35.4 -p 162.159.200.1 -p 162.159.200.123 &
+    # 77.88.8.8 (Yandex) first: the operator blocks all other NTP servers,
+    # only Yandex is reachable directly. The rest are fallbacks.
+    /usr/sbin/ntpd -q -p 77.88.8.8 -p 194.190.168.1 -p 216.239.35.0 -p 216.239.35.4 -p 162.159.200.1 -p 162.159.200.123 &
     local ntp_pid=$! waited=0
     while kill -0 "$ntp_pid" 2>/dev/null; do
         [ "$waited" -lt 30 ] || break
@@ -679,8 +681,18 @@ list_update() {
     done
 
     if [ "$i" -eq $curl_attempts ]; then
-        echolog "❌ GitHub connection check failed after $curl_attempts attempts"
-        return 1
+        # Direct GitHub is blocked by the operator — try via the tunnel
+        # (sing-box mixed proxy on 127.0.0.1:4534) before giving up.
+        if curl -s -x "http://127.0.0.1:4534" -m $curl_max_timeout https://github.com > /dev/null 2>&1; then
+            echolog "✅ GitHub reachable via tunnel, lists will download through it"
+            # curl respects these automatically for all subsequent downloads
+            export http_proxy="http://127.0.0.1:4534"
+            export https_proxy="http://127.0.0.1:4534"
+            export PODKOP_LIST_PROXY="http://127.0.0.1:4534"
+        else
+            echolog "❌ GitHub connection check failed after $curl_attempts attempts (direct and via tunnel)"
+            return 1
+        fi
     fi
 
     echolog "📥 Downloading and processing lists..."
@@ -963,11 +975,13 @@ sing_box_configure_dns() {
     else
         config=$(sing_box_cm_add_tcp_dns_server "$config" "$SB_BOOTSTRAP_SERVER_TAG" "$bootstrap_dns_server" 53)
     fi
-    # 1.1.1.1/8.8.8.8 DoH MUST go through the tunnel (detour) — the operator
-    # blocks direct DoH. Yandex (77.88.8.8) stays direct (bootstrap).
+    # Main DNS goes through the tunnel (detour) — the operator blocks direct
+    # DoH/DOT to public resolvers. Only Yandex bootstrap stays direct.
+    # Applies to 1.1.1.1/8.8.8.8 AND any custom DNS from LuCI.
     local dns_detour=""
     case "$dns_server_address" in
-        1.1.1.1|8.8.8.8|1.0.0.1|8.8.4.4) dns_detour="$(get_outbound_tag_by_section "main")" ;;
+        77.88.8.8|77.88.8.1) ;;
+        *) dns_detour="$(get_outbound_tag_by_section "main")" ;;
     esac
     config=$(sing_box_cf_add_dns_server "$config" "$dns_type" "$SB_DNS_SERVER_TAG" "$dns_server" "$dns_domain_resolver" "$dns_detour")
     config=$(sing_box_cm_add_fakeip_dns_server "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_INET4_RANGE")
