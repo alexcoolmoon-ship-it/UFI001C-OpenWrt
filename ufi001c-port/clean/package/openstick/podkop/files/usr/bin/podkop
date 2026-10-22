@@ -657,6 +657,7 @@ list_update() {
     fi
 
     # Github Check
+    local github_ok=0
     for i in $(seq 1 $curl_attempts); do
         local service_proxy_address
         service_proxy_address="$(get_service_proxy_address)"
@@ -664,11 +665,13 @@ list_update() {
         if [ -n "$service_proxy_address" ]; then
             if curl -s -x "http://$service_proxy_address" -m $curl_timeout https://github.com > /dev/null; then
                 echolog "✅ GitHub connection check passed (via proxy)"
+                github_ok=1
                 break
             fi
         else
             if curl -s -m $curl_timeout https://github.com > /dev/null; then
                 echolog "✅ GitHub connection check passed"
+                github_ok=1
                 break
             fi
         fi
@@ -680,7 +683,7 @@ list_update() {
         sleep $delay
     done
 
-    if [ "$i" -eq $curl_attempts ]; then
+    if [ "$github_ok" -eq 0 ]; then
         # Direct GitHub is blocked by the operator — try via the tunnel
         # (sing-box mixed proxy on 127.0.0.1:4534) before giving up.
         if curl -s -x "http://127.0.0.1:4534" -m $curl_max_timeout https://github.com > /dev/null 2>&1; then
