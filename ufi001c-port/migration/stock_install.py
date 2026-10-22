@@ -46,7 +46,7 @@ LIMITS = {'boot.img': 64*1024**2, 'system.img': GIB,
           'xhttp-validation.json': 65536, 'addons.lock.json': 65536,
           'routing-rootfs-check.json': 65536, 'kernel-routing-check.txt': 16384,
           'validation.json': 65536, 'release-info.json': 16384,
-          'INSTALL-RU.md': 65536, 'VALIDATION-v3.1.2.md': 65536,
+          'INSTALL-RU.txt': 65536, 'INSTALL-RU.md': 65536, 'VALIDATION-v3.1.2.md': 65536,
           'VALIDATION-v3.1.3.md': 65536, 'VALIDATION-v3.1.4.md': 65536, 'VALIDATION-v3.1.5.md': 65536, 'VALIDATION-v3.1.6.md': 65536,
           'VALIDATION-v3.2.0.md': 65536, 'VALIDATION-v3.2.1.md': 65536, 'VALIDATION-v3.2.2.md': 65536,
           'VALIDATION-v3.2.3.md': 65536, 'VALIDATION-v3.2.4.md': 65536, 'VALIDATION-v3.2.5.md': 65536, 'VALIDATION-v3.2.6.md': 65536,
@@ -595,7 +595,7 @@ PACKAGE_FILES = ('stock_install.py', 'ufi-install.py', 'radio_backup.py', 'radio
                  'portable_runtime.py', 'runtime_manifest.py', 'windows_entry.py', 'windows_edl.py', 'windows-runtime.lock.json',
                  'RUN.cmd', 'CHECK-PC.cmd', 'DRIVER-HELP.cmd', 'DRIVER-RU.txt',
                  'CHECK-LTE.cmd', 'ufi-postboot-check.sh',
-                 'INSTALL.cmd', 'RESUME.cmd', 'RESTORE.cmd', 'MAKE-BUNDLE.cmd', 'STOCK-CHECK.cmd', 'CHECK-BACKUP.cmd',
+                 'INSTALL.cmd', 'UPDATE.cmd', 'RESUME.cmd', 'RESTORE.cmd', 'MAKE-BUNDLE.cmd', 'STOCK-CHECK.cmd', 'CHECK-BACKUP.cmd',
                  'README-STOCK-RU.md', 'VALIDATION-STOCK.md', 'BASE-SOURCES.md')
 
 
@@ -622,17 +622,16 @@ def bundle(args):
         update.prepare_images(images, prepared)
         building=work/'bundle.zip'
         with zipfile.ZipFile(building, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-            # The top-level folder already has the final name: unzip once and
-            # run INSTALL.cmd, no renaming or moving files around.
-            prefix=f'UFI001C-{VERSION}/'
-            for name in PACKAGE_FILES: archive.write(HERE/name, prefix+name)
+            # v3.2.8+: files go directly to ZIP root, no subfolder.
+            # Unzip once and run INSTALL.cmd — no renaming or moving.
+            for name in PACKAGE_FILES: archive.write(HERE/name, name)
             for path in sorted((HERE/'stock-base').iterdir()):
-                if path.is_file(): archive.write(path, prefix+'stock-base/'+path.name)
+                if path.is_file(): archive.write(path, 'stock-base/'+path.name)
             for path in sorted(images.iterdir()):
-                archive.write(path, prefix+path.name)
+                archive.write(path, path.name)
             if runtime:
                 for path in sorted(Path(runtime).rglob('*')):
-                    if path.is_file(): archive.write(path, prefix+'runtime/'+path.relative_to(runtime).as_posix())
+                    if path.is_file(): archive.write(path, 'runtime/'+path.relative_to(runtime).as_posix())
         with zipfile.ZipFile(building) as archive:
             if archive.testzip() is not None: raise ValueError('Generated ZIP integrity check failed')
         # Exclusive creation, so an existing release is never overwritten.
