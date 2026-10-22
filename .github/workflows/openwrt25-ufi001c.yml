@@ -180,7 +180,7 @@ jobs:
           python3 ufi001c-port/check_xhttp.py "$RUNNER_TEMP/openwrt" --report "$RUNNER_TEMP/UFI001C-OpenWrt-25.12.5/xhttp-validation.json"
           cp ufi001c-port/addons.lock.json "$RUNNER_TEMP/UFI001C-OpenWrt-25.12.5/"
           cp ufi001c-port/migration/ufi-install.py ufi001c-port/migration/radio_backup.py "$RUNNER_TEMP/UFI001C-OpenWrt-25.12.5/"
-          cp ufi001c-port/INSTALL-RU.txt "$RUNNER_TEMP/UFI001C-OpenWrt-25.12.5/"
+          cp ufi001c-port/INSTALL-RU.md "$RUNNER_TEMP/UFI001C-OpenWrt-25.12.5/"
           cp ufi001c-port/VALIDATION-v3.2.7.md "$RUNNER_TEMP/UFI001C-OpenWrt-25.12.5/"
           cp "$RUNNER_TEMP/kernel-routing-check.txt" "$RUNNER_TEMP/UFI001C-OpenWrt-25.12.5/"
           cp "$RUNNER_TEMP/routing-rootfs-check.json" "$RUNNER_TEMP/UFI001C-OpenWrt-25.12.5/"
