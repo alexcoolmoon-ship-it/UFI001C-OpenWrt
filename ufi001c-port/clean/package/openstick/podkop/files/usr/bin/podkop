@@ -979,12 +979,19 @@ sing_box_configure_dns() {
         config=$(sing_box_cm_add_tcp_dns_server "$config" "$SB_BOOTSTRAP_SERVER_TAG" "$bootstrap_dns_server" 53)
     fi
     # Main DNS goes through the tunnel (detour) — the operator blocks direct
-    # DoH/DOT to public resolvers. Only Yandex bootstrap stays direct.
-    # Applies to 1.1.1.1/8.8.8.8 AND any custom DNS from LuCI.
+    # DoH/DoT to public resolvers. Only Yandex bootstrap stays direct.
+    # Applies to IP-based DNS (1.1.1.1/8.8.8.8 and any custom IP from LuCI).
+    # Hostname-based DNS uses independent TCP bootstrap (no detour) so the
+    # hostname can be resolved before the tunnel is up.
     local dns_detour=""
     case "$dns_server_address" in
         77.88.8.8|77.88.8.1) ;;
-        *) dns_detour="$(get_outbound_tag_by_section "main")" ;;
+        *)
+            if printf '%s' "$dns_server_address" | grep -qE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'; then
+                # IPv4 address (not Yandex) - via tunnel
+                dns_detour="$(get_outbound_tag_by_section "main")"
+            fi
+            ;;
     esac
     config=$(sing_box_cf_add_dns_server "$config" "$dns_type" "$SB_DNS_SERVER_TAG" "$dns_server" "$dns_domain_resolver" "$dns_detour")
     config=$(sing_box_cm_add_fakeip_dns_server "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_INET4_RANGE")
