@@ -13,7 +13,7 @@ import stock_install
 from check_rootfs import FILES, FORBIDDEN, source_bytes
 from runtime_manifest import verify_runtime
 
-VERSION = '3.2.7-clean'
+VERSION = '3.2.8-clean'
 PROFILE = 'UFI001C v3.2.7 Clean / OpenWrt 25.12.5'
 
 
