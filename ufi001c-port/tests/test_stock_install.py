@@ -296,8 +296,7 @@ class StockTests(unittest.TestCase):
             usb.assert_not_called()
         with zipfile.ZipFile(output) as z:
             self.assertIsNone(z.testzip())
-            # v3.2.8+: files go directly to ZIP root, no subfolder prefix.
-            prefix = ''
+            prefix = f'UFI001C-{s.VERSION}/'
             self.assertIn(prefix + 'INSTALL.cmd',z.namelist())
             self.assertIn(prefix + 'RESTORE.cmd',z.namelist())
             self.assertIn(prefix + 'edl_watchdog.py',z.namelist())
