@@ -117,13 +117,24 @@ def main():
     # MSM8916 loader. Bypass the DB by passing the loader explicitly.
     if '--loader' not in sys.argv:
         _loader = None
-        for _lp in [(root / 'Loaders' / '007050e100000000_cc3153a80293939b_fhprg.bin'),
-                    (root / '_internal' / 'Loaders' / '007050e100000000_cc3153a80293939b_fhprg.bin'),
-                    (root / 'Loaders' / 'qualcomm' / 'factory' / 'msm8916' / '007050e100000000_cc3153a80293939b_fhprg.bin'),
-                    (root / '_internal' / 'Loaders' / 'qualcomm' / 'factory' / 'msm8916' / '007050e100000000_cc3153a80293939b_fhprg.bin')]:
-            if _lp.is_file():
-                _loader = str(_lp)
+        _bases = [root / 'Loaders', root / '_internal' / 'Loaders']
+        # 1) Exact PK_HASH match first
+        for _base in _bases:
+            for _sub in ['', 'qualcomm/factory/msm8916']:
+                _p = _base / _sub / '007050e100000000_cc3153a80293939b_fhprg.bin' if _sub else _base / '007050e100000000_cc3153a80293939b_fhprg.bin'
+                if _p.is_file():
+                    _loader = str(_p)
+                    break
+            if _loader:
                 break
+        # 2) Fallback: any MSM8916 loader (device is unfused, any works)
+        if not _loader:
+            for _base in _bases:
+                if _base.is_dir():
+                    _found = sorted(_base.rglob('007050e1*.bin'))
+                    if _found:
+                        _loader = str(_found[0])
+                        break
         if _loader:
             # Insert after script name: edl.py --loader <path> <cmd...>
             sys.argv.insert(1, _loader)
