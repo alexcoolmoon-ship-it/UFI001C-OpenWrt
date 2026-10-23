@@ -13,15 +13,17 @@ def summarize(data, profile):
         raise ValueError('Unexpected factory radio partition length')
     digest = hashlib.sha256(data).hexdigest()
     expected = profile['stock_modem_sha256']
+    _exp_list = [expected] if isinstance(expected, str) else expected
+    _matches = digest in _exp_list
     # Export only narrowly recognized firmware build labels, never all strings.
     versions = sorted({m.decode('ascii') for m in re.findall(
         rb'\bUFI[0-9A-Z_-]{1,24}[ \t_]+20[0-9]{6}\b', data)})[:16]
     return {'format': 1, 'profile': profile['id'],
             'radio_bytes': len(data), 'stock_modem_sha256': digest,
             'expected_stock_modem_sha256': expected,
-            'stock_modem_hash_matches': digest == expected,
+            'stock_modem_hash_matches': _matches,
             'firmware_labels': versions, 'nv_exported': False,
-            'compatibility': 'known-radio-hash' if digest == expected else 'needs-review',
+            'compatibility': 'known-radio-hash' if _matches else 'needs-review',
             'meaning': 'A partition hash mismatch alone does not identify a board revision. '
                        'A matching label alone does not prove compatible RF hardware.',
             'hardware_boot_test': 'not performed'}
