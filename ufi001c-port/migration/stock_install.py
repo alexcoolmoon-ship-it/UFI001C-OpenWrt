@@ -376,16 +376,24 @@ def build_write_plan(stock, hashes, profile, base, work, prepared, nv_data, disk
 
 class EDL:
     def __init__(self, root, log):
-        self.root = Path(root).resolve()
-        self.exe = self.root / ('.venv/Scripts/python.exe' if sys.platform == 'win32' else '.venv/bin/python')
+        from portable_runtime import bundled_edl
+        self.portable = bundled_edl()
+        self.root = self.portable or Path(root).resolve()
+        self.exe = (self.root / 'UFI-EDL.exe' if self.portable else
+                    self.root / ('.venv/Scripts/python.exe' if sys.platform == 'win32' else '.venv/bin/python'))
         self.log = Path(log)
-        if not self.exe.is_file() or not (self.root / 'edl.py').is_file():
+        self.checked_usb = False
+        if not self.exe.is_file() or (not self.portable and not (self.root / 'edl.py').is_file()):
             raise ValueError('Working EDL environment not found. Set UFI_EDL_ROOT to its folder.')
 
     def __call__(self, action, *args):
         # EDL may return success even when a programmer rejects a write.
         # Every mutation therefore MUST be followed by an independent readback.
-        prefix = [str(self.exe), '-u', str(self.root / 'edl.py')]
+        if self.portable and not self.checked_usb:
+            from portable_runtime import require_single_edl
+            require_single_edl()
+            self.checked_usb = True
+        prefix = [str(self.exe)] if self.portable else [str(self.exe), '-u', str(self.root / 'edl.py')]
         command = [*prefix, action,
                    *map(str, args), '--memory=emmc', '--sectorsize=512']
         run_edl(command, self.root, action, args, self.log)
