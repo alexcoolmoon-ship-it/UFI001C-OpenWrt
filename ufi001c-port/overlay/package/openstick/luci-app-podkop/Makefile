@@ -4,11 +4,13 @@ PKG_NAME:=luci-app-podkop
 
 PKG_VERSION:=0.7.24
 
-PKG_RELEASE:=2
+PKG_RELEASE:=102
 
 LUCI_TITLE:=LuCI podkop app
 LUCI_DEPENDS:=+luci-base +podkop
 LUCI_PKGARCH:=all
+# Keep the checked UI bytes identical to the source and live hotfix.
+LUCI_MINIFY_JS:=0
 LUCI_LANG.ru:=Русский (Russian)
 LUCI_LANG.en:=English
 
@@ -19,12 +21,4 @@ LUCI_LANGUAGES:=en ru
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
-define Package/$(PKG_NAME)/install
-	$(INSTALL_DIR) $(1)$(HTDOCS)
-	$(CP) $(PKG_BUILD_DIR)/htdocs/* $(1)$(HTDOCS)/
-	$(INSTALL_DIR) $(1)/
-	$(CP) $(PKG_BUILD_DIR)/root/* $(1)/
-	sed -i -e 's/__COMPILED_VERSION_VARIABLE__/$(PKG_VERSION)/g' $(1)$(HTDOCS)/luci-static/resources/view/podkop/main.js || true
-endef
-
-$(eval $(call BuildPackage,$(PKG_NAME)))
+# call BuildPackage - OpenWrt buildroot signature (luci.mk evaluates packages)
