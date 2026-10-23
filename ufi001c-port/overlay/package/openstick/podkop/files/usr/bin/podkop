@@ -31,6 +31,9 @@ check_required_file "$PODKOP_LIB/rulesets.sh"
 . "$PODKOP_LIB/logging.sh"
 . "$PODKOP_LIB/rulesets.sh"
 
+check_required_file "$PODKOP_LIB/ufi_startup.sh"
+. "$PODKOP_LIB/ufi_startup.sh"
+
 config_load "$PODKOP_CONFIG"
 
 check_requirements() {
@@ -102,62 +105,25 @@ _check_outbound_section() {
 has_outbound_section() {
     local section_exists=1
 
-    foreach_configured_section _check_outbound_section
+    ufi_each_section _check_outbound_section
 
     return $section_exists
 }
 
-# The shipped empty template is not an outbound. Ignore it consistently when
-# the owner adds a differently named section instead of editing the template.
-section_configured() {
-    local type kind key value
-    config_get type "$1" connection_type
-    case "$type" in
-    proxy)
-        config_get kind "$1" proxy_config_type
-        case "$kind" in
-        url) key=proxy_string ;;
-        selector) key=selector_proxy_links ;;
-        urltest) key=urltest_proxy_links ;;
-        outbound) key=outbound_json ;;
-        *) return 1 ;;
-        esac ;;
-    vpn) key=interface ;;
-    block|exclusion) return 0 ;;
-    *) return 1 ;;
-    esac
-    config_get value "$1" "$key"
-    [ -n "$(printf '%s' "$value" | tr -d '[:space:]')" ]
-}
-
-configured_section_handler() {
-    local section="$1" callback="$2"
-    section_configured "$section" || return 0
-    "$callback" "$section"
-}
-
-foreach_configured_section() {
-    config_foreach configured_section_handler section "$1"
-}
-
-# BusyBox ntpd -q has no built-in timeout: with unreachable servers it hangs
-# forever and blocks start_main. Run it in the background and wait at most
-# 30 s (pure shell, no extra packages), then kill it and continue anyway.
 sync_time_ntp() {
-    # 77.88.8.8 (Yandex) first: the operator blocks all other NTP servers,
-    # only Yandex is reachable directly. The rest are fallbacks.
-    /usr/sbin/ntpd -q -p 77.88.8.8 -p 194.190.168.1 -p 216.239.35.0 -p 216.239.35.4 -p 162.159.200.1 -p 162.159.200.123 &
-    local ntp_pid=$! waited=0
-    while kill -0 "$ntp_pid" 2>/dev/null; do
-        [ "$waited" -lt 30 ] || break
+    # Sync time for DoH/DoT. ntpd -q has no built-in timeout: bound it here
+    # so a hung NTP can never block startup. Always succeeds.
+    /usr/sbin/ntpd -q -p 194.190.168.1 -p 216.239.35.0 -p 216.239.35.4 -p 162.159.200.1 -p 162.159.200.123 & ntp_pid=$!
+    ntp_wait=0
+    while kill -0 "$ntp_pid" 2>/dev/null && [ "$ntp_wait" -lt 30 ]; do
         sleep 1
-        waited=$((waited + 1))
+        ntp_wait=$((ntp_wait + 1))
     done
     if kill -0 "$ntp_pid" 2>/dev/null; then
-        kill "$ntp_pid" 2>/dev/null
-        wait "$ntp_pid" 2>/dev/null
-        log "ntpd -q timed out after 30s; continuing without time sync" "warn"
+        kill "$ntp_pid" 2>/dev/null || true
+        log "NTP sync timed out after 30s; continuing without time sync"
     fi
+    wait "$ntp_pid" 2>/dev/null || true
     return 0
 }
 
@@ -165,39 +131,32 @@ start_main() {
     log "Starting podkop"
 
     check_requirements
+    ufi_prepare_runtime || return 1
 
     migration
 
-    foreach_configured_section process_validate_service
+    ufi_each_section process_validate_service
 
-    # Plain TCP/UDP DNS does not need a TLS clock. Do not block it on NTP.
-    local dns_type
-    config_get dns_type "settings" "dns_type" "tcp"
-    local cloudflare_enabled
-    config_get_bool cloudflare_enabled settings cloudflare_dns_patch 0
-    [ "$cloudflare_enabled" != 1 ] || dns_type=tcp
-    case "$dns_type" in
-    doh|dot)
-        sync_time_ntp
-        ;;
-    esac
+    br_netfilter_disable
+
+    sync_time_ntp
 
     sleep 1
 
     mkdir -p "$TMP_SING_BOX_FOLDER"
     mkdir -p "$TMP_RULESET_FOLDER"
 
-    # Reject invalid DNS/proxy settings before installing interception rules.
-    sing_box_init_config || return 1
-
     # base
-    br_netfilter_disable
-    route_table_rule_mark || { log "Policy routing install failed; aborting start" "fatal"; return 1; }
-    create_nft_rules || { log "nft rules install failed; aborting start" "fatal"; return 1; }
+    route_table_rule_mark || {
+        log "IPv4 policy routing could not be installed. Podkop startup aborted before DNS changes; see the system log." "fatal"
+        exit 1
+    }
+    create_nft_rules
     sing_box_configure_service
 
     # sing-box
-    foreach_configured_section add_cron_job
+    sing_box_init_config
+    ufi_each_section add_cron_job
     /etc/init.d/sing-box start
 
     log "Nice"
@@ -210,9 +169,7 @@ stop_main() {
 
     if [ -f /var/run/podkop_list_update.pid ]; then
         pid=$(cat /var/run/podkop_list_update.pid)
-        # Never kill a recycled PID: verify it is still our list_update.
-        if [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] && \
-           tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "podkop list_update"; then
+        if kill -0 "$pid" 2> /dev/null; then
             kill "$pid" 2> /dev/null
             log "Stopped list_update"
         fi
@@ -225,29 +182,24 @@ stop_main() {
 
     log "Flush nft"
     if nft list table inet "$NFT_TABLE_NAME" > /dev/null 2>&1; then
-        nft delete table inet "$NFT_TABLE_NAME" || {
-            log "Failed to delete nft table $NFT_TABLE_NAME; aborting stop to avoid split state" "error"
-            return 1
-        }
+        nft delete table inet "$NFT_TABLE_NAME"
     fi
 
-    log "Flush ip rule"
-    if ip rule list | grep -q "podkop"; then
-        ip rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105
-    fi
-
-    log "Flush ip route"
-    if ip route list table "$RT_TABLE_NAME" > /dev/null 2>&1; then
-        ip route flush table "$RT_TABLE_NAME"
-    fi
+    log "Remove owned IPv4 policy rule and local route"
+    sh "$PODKOP_LIB/ufi_policy_routing.sh" remove ||
+        log "Could not remove owned policy routes safely; routing tables were not flushed" "warn"
 
     log "Stop sing-box"
     /etc/init.d/sing-box stop
 }
 
 start() {
-    podkop_acquire_lock || return 1
-    start_main || return 1
+    if ! has_outbound_section; then
+        stop
+        log "No configured proxy/VPN section yet. Add a section and a connection URL in LuCI; ordinary modem DNS remains available." info
+        return 0
+    fi
+    start_main || { stop; return 1; }
 
     config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
     if [ "$dont_touch_dhcp" -eq 0 ]; then
@@ -256,34 +208,30 @@ start() {
 
     uci_set "podkop" "settings" "shutdown_correctly" 0
     uci commit "podkop" && config_load "$PODKOP_CONFIG"
+    : >/var/run/ufi-podkop.active
 }
 
 stop() {
-    podkop_acquire_lock || return 1
+    rm -f /var/run/ufi-podkop.active
     local dont_touch_dhcp
     config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
     if [ "$dont_touch_dhcp" -eq 0 ]; then
         dnsmasq_restore
     fi
 
-    if ! stop_main; then
-        log "stop_main failed; keeping shutdown_correctly=0" "warn"
-        return 1
-    fi
+    stop_main
 
     uci_set "podkop" "settings" "shutdown_correctly" 1
     uci commit "podkop" && config_load "$PODKOP_CONFIG"
 }
 
 reload() {
-    podkop_acquire_lock || return 1
     log "Podkop reload"
-    stop_main || return 1
-    start_main || return 1
+    stop
+    start
 }
 
 restart() {
-    podkop_acquire_lock || return 1
     log "Podkop restart"
     stop
     start
@@ -326,57 +274,9 @@ br_netfilter_disable() {
 
 # Main funcs
 
-# Serialize lifecycle operations. Concurrent start/stop (procd config
-# trigger vs manual restart, or a restart landing mid-start) used to tear
-# down nftables/policy-routing while another instance was rebuilding them,
-# leaving the split state "nft table present, policy routing gone".
-podkop_acquire_lock() {
-    local lockdir=/var/run/ufi-podkop.lock owner=""
-    if mkdir "$lockdir" 2>/dev/null; then
-        echo $$ > "$lockdir/pid"
-        trap 'rm -rf /var/run/ufi-podkop.lock' EXIT
-        return 0
-    fi
-    [ -r "$lockdir/pid" ] && owner=$(cat "$lockdir/pid" 2>/dev/null)
-    # Re-entrant: restart() calls stop() then start() in one process.
-    [ "$owner" = "$$" ] && return 0
-    if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
-        log "Another podkop lifecycle operation (pid $owner) is in progress; refusing" "warn"
-        return 1
-    fi
-    if [ -n "$owner" ] || [ -d "$lockdir" ]; then
-        log "Removing stale podkop lifecycle lock" "warn"
-        rm -rf "$lockdir"
-        if mkdir "$lockdir" 2>/dev/null; then
-            echo $$ > "$lockdir/pid"
-            trap 'rm -rf /var/run/ufi-podkop.lock' EXIT
-            return 0
-        fi
-    fi
-    # Best effort: without a writable lock dir (e.g. a non-root test env)
-    # lifecycle ops must still work; continue without mutual exclusion.
-    log "Cannot create podkop lifecycle lock; continuing without mutual exclusion" "warn"
-    return 0
-}
-
 route_table_rule_mark() {
     grep -q "105 $RT_TABLE_NAME" /etc/iproute2/rt_tables || echo "105 $RT_TABLE_NAME" >> /etc/iproute2/rt_tables
-
-    if ! ip route list table "$RT_TABLE_NAME" 2> /dev/null | grep -q "local default dev lo scope host"; then
-        log "Added route for tproxy" "debug"
-        ip route add local 0.0.0.0/0 dev lo table "$RT_TABLE_NAME" || return 1
-    else
-        log "Route for tproxy exists" "debug"
-    fi
-
-    # iproute2 prints the mark normalized (0x100000) and the table by name;
-    # match that form so a second start does not stack a duplicate rule.
-    if ! ip rule list 2>/dev/null | grep -Eq "from all fwmark 0x0*100000/0x0*100000 lookup ($RT_TABLE_NAME|105)( |$)"; then
-        log "Create marking rule" "debug"
-        ip -4 rule add fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105 || return 1
-    else
-        log "Marking rule exist" "debug"
-    fi
+    sh "$PODKOP_LIB/ufi_policy_routing.sh" ensure
 }
 
 nft_init_interfaces_set() {
@@ -392,10 +292,7 @@ nft_init_interfaces_set() {
 
 create_nft_rules() {
     log "Create nft table"
-    # Idempotent: a previous torn-down start may have left a partial table;
-    # rebuilding on top of it would stack duplicate rules.
-    nft delete table inet "$NFT_TABLE_NAME" 2>/dev/null
-    nft_create_table "$NFT_TABLE_NAME" || return 1
+    nft_create_table "$NFT_TABLE_NAME"
 
     log "Create localv4 set"
     nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_LOCALV4_SET_NAME"
@@ -448,15 +345,6 @@ create_nft_rules() {
         log "NTP traffic exclude for proxy"
         nft insert rule inet "$NFT_TABLE_NAME" mangle udp dport 123 return
     fi
-
-    # Verify the interception path is complete before sing-box starts.
-    local chain
-    for chain in mangle mangle_output proxy; do
-        nft list chain inet "$NFT_TABLE_NAME" "$chain" >/dev/null 2>&1 || {
-            log "nft chain $chain missing after creation" "error"
-            return 1
-        }
-    done
 }
 
 backup_dnsmasq_config_option() {
@@ -471,57 +359,34 @@ backup_dnsmasq_config_option() {
 }
 
 dnsmasq_configure() {
-    # Always converge dnsmasq to the Podkop state on every start. The old
-    # code skipped this entirely after an unclean shutdown (and the shipped
-    # default of shutdown_correctly is 0), which left dnsmasq permanently
-    # pointed away from the Podkop DNS: clients then resolved outside the
-    # tunnel, got real IPs, and their traffic never matched the nftables
-    # mangle rules. Backups of the original values are taken only once, so
-    # repeated runs cannot clobber them with Podkop's own values.
-    log "Configure dnsmasq for sing-box"
-
-    local backup_done=0
-    if [ -n "$(uci_get "dhcp" "@dnsmasq[0]" "podkop_server")" ] || \
-       [ -n "$(uci_get "dhcp" "@dnsmasq[0]" "podkop_noresolv")" ] || \
-       [ -n "$(uci_get "dhcp" "@dnsmasq[0]" "podkop_cachesize")" ]; then
-        backup_done=1
+    local shutdown_correctly
+    config_get shutdown_correctly "settings" "shutdown_correctly"
+    if [ "$shutdown_correctly" -eq 0 ]; then
+        log "Previous shutdown of podkop was not correct, reconfiguration of dnsmasq is not required"
+        return 0
     fi
 
-    if [ "$backup_done" -eq 0 ]; then
-        log "Backup dnsmasq configuration" "debug"
-        local server
+    log "Backup dnsmasq configuration"
+    current_servers="$(uci_get "dhcp" "@dnsmasq[0]" "server")"
+    if [ -n "$current_servers" ]; then
         for server in $(uci_get "dhcp" "@dnsmasq[0]" "server"); do
-            if ! [ "$server" = "$SB_DNS_INBOUND_ADDRESS" ]; then
+            if ! [ "$server" == "$SB_DNS_INBOUND_ADDRESS" ]; then
                 uci_add_list "dhcp" "@dnsmasq[0]" "podkop_server" "$server"
             fi
         done
-        backup_dnsmasq_config_option "noresolv" "podkop_noresolv"
-        backup_dnsmasq_config_option "cachesize" "podkop_cachesize"
-    fi
-
-    local changed=0
-    local servers
-    servers="$(uci_get "dhcp" "@dnsmasq[0]" "server")"
-    if [ "$servers" != "$SB_DNS_INBOUND_ADDRESS" ]; then
         uci_remove "dhcp" "@dnsmasq[0]" "server"
-        uci_add_list "dhcp" "@dnsmasq[0]" "server" "$SB_DNS_INBOUND_ADDRESS"
-        changed=1
-    fi
-    if [ "$(uci_get "dhcp" "@dnsmasq[0]" "noresolv")" != "1" ]; then
-        uci_set "dhcp" "@dnsmasq[0]" "noresolv" 1
-        changed=1
-    fi
-    if [ "$(uci_get "dhcp" "@dnsmasq[0]" "cachesize")" != "0" ]; then
-        uci_set "dhcp" "@dnsmasq[0]" "cachesize" 0
-        changed=1
     fi
 
-    if [ "$changed" -eq 1 ]; then
-        uci_commit "dhcp"
-        /etc/init.d/dnsmasq restart
-    else
-        log "dnsmasq already configured for sing-box" "debug"
-    fi
+    backup_dnsmasq_config_option "noresolv" "podkop_noresolv"
+    backup_dnsmasq_config_option "cachesize" "podkop_cachesize"
+
+    log "Configure dnsmasq for sing-box"
+    uci_add_list "dhcp" "@dnsmasq[0]" "server" "$SB_DNS_INBOUND_ADDRESS"
+    uci_set "dhcp" "@dnsmasq[0]" "noresolv" 1
+    uci_set "dhcp" "@dnsmasq[0]" "cachesize" 0
+    uci_commit "dhcp"
+
+    /etc/init.d/dnsmasq restart
 }
 
 dnsmasq_restore() {
@@ -621,93 +486,60 @@ add_cron_job() {
 }
 
 remove_cron_job() {
-    local cur
-    # Never push empty input into crontab: with no crontab installed,
-    # `crontab -l` fails and the old pipeline wiped the whole root crontab
-    # on every stop.
-    cur=$(crontab -l 2>/dev/null) || { log "The cron job removed"; return 0; }
-    printf '%s\n' "$cur" | grep -v "/usr/bin/podkop list_update" | crontab -
+    (crontab -l | grep -v "/usr/bin/podkop list_update") | crontab -
     log "The cron job removed"
+}
+
+ufi_checked_import() {
+    "$2" "$1" || ufi_import_failed=1
+    return 0
 }
 
 list_update() {
     echolog "🔄 Starting lists update..."
+    local nslookup_timeout=3 nslookup_attempts=10 curl_timeout=5 curl_attempts=10
+    local curl_max_timeout=10 delay=3 i ready=0 service_proxy_address
+    local ufi_download_failed=0 ufi_import_failed=0
+    ufi_prepare_runtime || return 1
+    service_proxy_address="$(get_service_proxy_address)"
 
-    local nslookup_timeout=3
-    local nslookup_attempts=10
-    local curl_timeout=5
-    local curl_attempts=10
-    local curl_max_timeout=10
-    local delay=3
-    local i
-
-    # DNS Check
-    for i in $(seq 1 $nslookup_attempts); do
-        if nslookup -timeout=$nslookup_timeout openwrt.org > /dev/null 2>&1; then
-            echolog "✅ DNS check passed"
-            break
+    # CONNECT resolves the destination at the proxy. Direct DNS must not gate it.
+    if [ -z "$service_proxy_address" ]; then
+        for i in $(seq 1 "$nslookup_attempts"); do
+            if nslookup -timeout="$nslookup_timeout" openwrt.org >/dev/null 2>&1; then
+                ready=1; echolog "✅ DNS check passed"; break
+            fi
+            echolog "DNS is unavailable [$i/$nslookup_attempts]"
+            [ "$i" -ge "$nslookup_attempts" ] || sleep "$delay"
+        done
+        if [ "$ready" -ne 1 ]; then
+            echolog "❌ DNS check failed after $nslookup_attempts attempts"; return 1
         fi
-        echolog "DNS is unavailable [$i/$nslookup_attempts]"
-        sleep $delay
-    done
-
-    if [ "$i" -eq $nslookup_attempts ]; then
-        echolog "❌ DNS check failed after $nslookup_attempts attempts"
-        return 1
     fi
 
-    # Github Check
-    local github_ok=0
-    for i in $(seq 1 $curl_attempts); do
-        local service_proxy_address
-        service_proxy_address="$(get_service_proxy_address)"
-
+    ready=0
+    for i in $(seq 1 "$curl_attempts"); do
         if [ -n "$service_proxy_address" ]; then
-            if curl -s -x "http://$service_proxy_address" -m $curl_timeout https://github.com > /dev/null; then
-                echolog "✅ GitHub connection check passed (via proxy)"
-                github_ok=1
-                break
-            fi
+            curl --noproxy '' -fsS -x "http://$service_proxy_address" -m "$curl_timeout" https://github.com >/dev/null
         else
-            if curl -s -m $curl_timeout https://github.com > /dev/null; then
-                echolog "✅ GitHub connection check passed"
-                github_ok=1
-                break
-            fi
+            /usr/libexec/ufi-service-fetch -fsS -m "$curl_timeout" https://github.com >/dev/null
         fi
-
+        if [ "$?" -eq 0 ]; then ready=1; echolog "✅ GitHub connection check passed"; break; fi
         echolog "GitHub is unavailable [$i/$curl_attempts] (max-timeout=$curl_timeout)"
-        if [ "$curl_timeout" -lt $curl_max_timeout ]; then
-            curl_timeout=$((curl_timeout + 1))
-        fi
-        sleep $delay
+        [ "$curl_timeout" -ge "$curl_max_timeout" ] || curl_timeout=$((curl_timeout + 1))
+        [ "$i" -ge "$curl_attempts" ] || sleep "$delay"
     done
-
-    if [ "$github_ok" -eq 0 ]; then
-        # Direct GitHub is blocked by the operator — try via the tunnel
-        # (sing-box mixed proxy on 127.0.0.1:4534) before giving up.
-        if curl -s -x "http://127.0.0.1:4534" -m $curl_max_timeout https://github.com > /dev/null 2>&1; then
-            echolog "✅ GitHub reachable via tunnel, lists will download through it"
-            # curl respects these automatically for all subsequent downloads
-            export http_proxy="http://127.0.0.1:4534"
-            export https_proxy="http://127.0.0.1:4534"
-            export PODKOP_LIST_PROXY="http://127.0.0.1:4534"
-        else
-            echolog "❌ GitHub connection check failed after $curl_attempts attempts (direct and via tunnel)"
-            return 1
-        fi
+    if [ "$ready" -ne 1 ]; then
+        echolog "❌ GitHub connection check failed after $curl_attempts attempts"; return 1
     fi
-
     echolog "📥 Downloading and processing lists..."
-
-    foreach_configured_section import_community_subnet_lists
-    foreach_configured_section import_domains_from_remote_domain_lists
-    foreach_configured_section import_subnets_from_remote_subnet_lists
-
-    if [ $? -eq 0 ]; then
-        echolog "✅ Lists update completed successfully"
+    ufi_each_section ufi_checked_import import_community_subnet_lists
+    ufi_each_section ufi_checked_import import_domains_from_remote_domain_lists
+    ufi_each_section ufi_checked_import import_subnets_from_remote_subnet_lists
+    if [ "$ufi_download_failed" -eq 0 ] && [ "$ufi_import_failed" -eq 0 ]; then
+        echolog "✅ Lists update completed successfully"; return 0
     else
-        echolog "❌ Lists update failed"
+        echolog "❌ Lists update failed"; return 1
     fi
 }
 
@@ -752,7 +584,13 @@ sing_box_init_config() {
     sing_box_configure_route
     sing_box_configure_experimental
     sing_box_additional_inbounds
-    sing_box_cloudflare_patch || return 1
+    # UFI_DNS_TUNNEL_V1: preserve DNS routing across reload/reboot
+    local ufi_dns_section
+    config_get ufi_dns_section settings ufi_dns_proxy_section
+    config=$(printf '%s\n' "$config" | sh /usr/lib/podkop/ufi_dns_tunnel.sh filter "$ufi_dns_section") || {
+        log "DNS tunnel configuration rejected" "fatal"
+        exit 1
+    }
     sing_box_save_config
 }
 
@@ -781,7 +619,7 @@ sing_box_configure_outbounds() {
 
     config=$(sing_box_cm_add_direct_outbound "$config" "$SB_DIRECT_OUTBOUND_TAG")
 
-    foreach_configured_section configure_outbound_handler
+    ufi_each_section configure_outbound_handler
 }
 
 configure_outbound_handler() {
@@ -960,40 +798,22 @@ sing_box_configure_dns() {
     config=$(sing_box_cm_configure_dns "$config" "$SB_DNS_SERVER_TAG" "ipv4_only" true)
 
     log "Adding DNS Servers" "debug"
-    local dns_type dns_server bootstrap_dns_server dns_domain_resolver dns_server_address
+    local dns_type dns_server bootstrap_dns_server dns_domain_resolver dns_server_address bootstrap_transport
     config_get dns_type "settings" "dns_type" "doh"
     config_get dns_server "settings" "dns_server" "1.1.1.1"
     config_get bootstrap_dns_server "settings" "bootstrap_dns_server" "77.88.8.8"
-    local ufi_bootstrap_transport
-    config_get ufi_bootstrap_transport "settings" "ufi_bootstrap_transport" "tcp"
-    case "$ufi_bootstrap_transport" in tcp|udp) ;; *) ufi_bootstrap_transport=tcp ;; esac
+    config_get bootstrap_transport "settings" "ufi_bootstrap_transport" "tcp"
+    case "$bootstrap_transport" in tcp|udp) ;; *) log 'Invalid bootstrap DNS transport' fatal; return 1;; esac
 
     dns_server_address="$(url_get_host "$dns_server")"
     if ! is_ipv4 "$dns_server_address"; then
         dns_domain_resolver=$SB_BOOTSTRAP_SERVER_TAG
     fi
 
-    if [ "$ufi_bootstrap_transport" = udp ]; then
-        config=$(sing_box_cm_add_udp_dns_server "$config" "$SB_BOOTSTRAP_SERVER_TAG" "$bootstrap_dns_server" 53)
-    else
-        config=$(sing_box_cm_add_tcp_dns_server "$config" "$SB_BOOTSTRAP_SERVER_TAG" "$bootstrap_dns_server" 53)
-    fi
-    # Main DNS goes through the tunnel (detour) — the operator blocks direct
-    # DoH/DoT to public resolvers. Only Yandex bootstrap stays direct.
-    # Applies to IP-based DNS (1.1.1.1/8.8.8.8 and any custom IP from LuCI).
-    # Hostname-based DNS uses independent TCP bootstrap (no detour) so the
-    # hostname can be resolved before the tunnel is up.
-    local dns_detour=""
-    case "$dns_server_address" in
-        77.88.8.8|77.88.8.1) ;;
-        *)
-            if printf '%s' "$dns_server_address" | grep -qE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'; then
-                # IPv4 address (not Yandex) - via tunnel
-                dns_detour="$(get_outbound_tag_by_section "main")"
-            fi
-            ;;
-    esac
-    config=$(sing_box_cf_add_dns_server "$config" "$dns_type" "$SB_DNS_SERVER_TAG" "$dns_server" "$dns_domain_resolver" "$dns_detour")
+    config=$(sing_box_cm_add_udp_dns_server "$config" "$SB_BOOTSTRAP_SERVER_TAG" "$bootstrap_dns_server" 53)
+    config=$(printf '%s' "$config" | jq --arg tag "$SB_BOOTSTRAP_SERVER_TAG" --arg transport "$bootstrap_transport" \
+        '(.dns.servers[] | select(.tag == $tag)).type = $transport')
+    config=$(sing_box_cf_add_dns_server "$config" "$dns_type" "$SB_DNS_SERVER_TAG" "$dns_server" "$dns_domain_resolver")
     config=$(sing_box_cm_add_fakeip_dns_server "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_INET4_RANGE")
 
     log "Adding DNS Rules"
@@ -1054,9 +874,9 @@ sing_box_configure_route() {
         config_list_foreach "settings" "routing_excluded_ips" exclude_source_ip_from_routing_handler "$rule_tag"
     fi
 
-    foreach_configured_section include_source_ips_in_routing_handler
+    ufi_each_section include_source_ips_in_routing_handler
 
-    foreach_configured_section configure_routing_for_section_lists
+    ufi_each_section configure_routing_for_section_lists
 }
 
 include_source_ips_in_routing_handler() {
@@ -1448,7 +1268,7 @@ sing_box_additional_inbounds() {
         )
     fi
 
-    foreach_configured_section configure_section_mixed_proxy
+    ufi_each_section configure_section_mixed_proxy
 }
 
 configure_section_mixed_proxy() {
@@ -1773,7 +1593,7 @@ _determine_first_outbound_section() {
 get_first_outbound_section() {
     local first_section=""
 
-    foreach_configured_section _determine_first_outbound_section
+    ufi_each_section _determine_first_outbound_section
 
     echo "$first_section"
 }
@@ -2113,7 +1933,7 @@ get_system_info() {
 
     podkop_version="$PODKOP_VERSION"
 
-    podkop_latest_version=$(curl -m 3 -s https://api.github.com/repos/itdoginfo/podkop/releases/latest | grep '"tag_name":' | cut -d'"' -f4)
+    podkop_latest_version=$(/usr/libexec/ufi-service-fetch -m 5 -fsS https://api.github.com/repos/itdoginfo/podkop/releases/latest 2>/dev/null | jq -r '.tag_name // empty')
     [ -z "$podkop_latest_version" ] && podkop_latest_version="unknown"
 
     if [ -f /www/luci-static/resources/view/podkop/main.js ]; then
@@ -2206,22 +2026,31 @@ get_status() {
 
 dns_query_ok() {
     local answer
-    answer=$(dig "$@" +noall +comments +answer 2>/dev/null) || return 1
-    printf '%s\n' "$answer" | grep -q 'status: NOERROR,' || return 1
-    printf '%s\n' "$answer" | grep -Eq '[[:space:]]IN[[:space:]]+A[[:space:]]+[0-9]+\.'
+    answer=$(dig "$@" +noall +comments +answer) || return 1
+    printf '%s\n' "$answer" | grep -q 'status: NOERROR,' &&
+    printf '%s\n' "$answer" | grep -Eq '[[:space:]]A[[:space:]]'
 }
 
 check_dns_available() {
-    local dns_type dns_server bootstrap_dns_server
+    local dns_type dns_server bootstrap_dns_server ufi_dns_proxy_section
     config_get dns_type "settings" "dns_type"
     config_get dns_server "settings" "dns_server"
     config_get bootstrap_dns_server "settings" "bootstrap_dns_server"
+    config_get ufi_dns_proxy_section "settings" "ufi_dns_proxy_section"
 
     local dns_status=0
     local dns_on_router=0
     local bootstrap_dns_status=0
     local dhcp_config_status=1
     local domain="google.com"
+    local lte_status=-1 lte_detail=""
+    if [ -x /usr/sbin/ufi-lte-health ]; then
+        if lte_detail=$(/usr/sbin/ufi-lte-health status 2>&1); then
+            lte_status=1
+        else
+            lte_status=0
+        fi
+    fi
 
     # Mask NextDNS ID if present
     local display_dns_server="$dns_server"
@@ -2235,32 +2064,31 @@ check_dns_available() {
         display_dns_server="dns.nextdns.io/$masked_path"
     fi
 
-    local cloudflare_enabled
-    config_get_bool cloudflare_enabled settings cloudflare_dns_patch 0
-    if [ "$cloudflare_enabled" = 1 ]; then
-        dns_type=doh
-        bootstrap_dns_server=77.88.8.8
-        display_dns_server="1.1.1.1 (proxy)"
-        if cloudflare_doh_query_ok; then dns_status=1; fi
+    if [ -n "$ufi_dns_proxy_section" ]; then
+        # The operator may block direct DoH. Probe the configured resolver over
+        # the selected tunnel instead of testing an intentionally unused path.
+        display_dns_server="$display_dns_server (proxy)"
+        if sh "$PODKOP_LIB/ufi_dns_tunnel.sh" probe-dns > /dev/null 2>&1; then
+            dns_status=1
+        fi
     elif [ "$dns_type" = "doh" ]; then
-        # The operator blocks 1.1.1.1 directly; DoH must go through the proxy
-        # tunnel. Query sing-box DNS (127.0.0.42), which does DoH via the
-        # outbound — a direct dig @1.1.1.1 would fail even when everything
-        # works. FakeIP answers (198.18.x.x) count as success.
-        if dns_query_ok @"$SB_DNS_INBOUND_ADDRESS" "$domain" A +timeout=4 +tries=1; then
+        # Check if dns_server already contains a path
+        local doh_path="/dns-query"
+        if echo "$dns_server" | grep -q "/"; then
+            # Path is already present, extract it
+            doh_path="/$(echo "$dns_server" | cut -d'/' -f2-)"
+            dns_server="$(echo "$dns_server" | cut -d'/' -f1)"
+        fi
+
+        if dns_query_ok @"$dns_server" "$domain" A +https="$doh_path" +timeout=4 +tries=1; then
             dns_status=1
         fi
     elif [ "$dns_type" = "dot" ]; then
-        # Same: direct 1.1.1.1 is blocked, go through sing-box.
-        if dns_query_ok @"$SB_DNS_INBOUND_ADDRESS" "$domain" A +timeout=4 +tries=1; then
+        if dns_query_ok @"$dns_server" "$domain" A +tls +timeout=4 +tries=1; then
             dns_status=1
         fi
     elif [ "$dns_type" = "udp" ]; then
         if dns_query_ok @"$dns_server" "$domain" A +timeout=4 +tries=1; then
-            dns_status=1
-        fi
-    elif [ "$dns_type" = "tcp" ]; then
-        if dns_query_ok @"$dns_server" "$domain" A +tcp +timeout=4 +tries=1; then
             dns_status=1
         fi
     fi
@@ -2270,33 +2098,37 @@ check_dns_available() {
         dns_on_router=1
     fi
 
-    # Check bootstrap DNS server using the configured transport (Codex plan:
-    # the diagnostic must probe the selected protocol, not hardcoded TCP).
+    # Check bootstrap DNS server
     if [ -n "$bootstrap_dns_server" ]; then
-        local ufi_bootstrap_transport proto_flag
-        config_get ufi_bootstrap_transport "settings" "ufi_bootstrap_transport" "tcp"
-        case "$ufi_bootstrap_transport" in tcp|udp) ;; *) ufi_bootstrap_transport=tcp ;; esac
-        if [ "$ufi_bootstrap_transport" = udp ]; then proto_flag="+notcp"; else proto_flag="+tcp"; fi
-        if dns_query_ok @"$bootstrap_dns_server" "$domain" A "$proto_flag" +timeout=4 +tries=1; then
+        local bootstrap_transport bootstrap_arg="" active_conf
+        config_get bootstrap_transport settings ufi_bootstrap_transport tcp
+        config_get active_conf settings config_path /etc/sing-box/config.json
+        # Report the active runtime, including an older configuration before reload.
+        bootstrap_transport=$(jq -r '[.dns.servers[]? | select(.tag == "bootstrap-dns-server") | .type][0] // empty' "$active_conf" 2>/dev/null) || true
+        [ -n "$bootstrap_transport" ] || config_get bootstrap_transport settings ufi_bootstrap_transport tcp
+        [ "$bootstrap_transport" != tcp ] || bootstrap_arg=+tcp
+        if dns_query_ok @"$bootstrap_dns_server" "$domain" A $bootstrap_arg +timeout=4 +tries=1; then
             bootstrap_dns_status=1
         fi
+        bootstrap_dns_server="$bootstrap_dns_server ($bootstrap_transport)"
     fi
 
     # Check if /etc/config/dhcp has server 127.0.0.42
     config_load dhcp
-    _podkop_dhcp_checked=0
     config_foreach check_dhcp_has_podkop_dns dnsmasq
     config_load "$PODKOP_CONFIG"
 
-    echo "{\"dns_type\":\"$dns_type\",\"dns_server\":\"$display_dns_server\",\"dns_status\":$dns_status,\"dns_on_router\":$dns_on_router,\"bootstrap_dns_server\":\"$bootstrap_dns_server\",\"bootstrap_dns_status\":$bootstrap_dns_status,\"dhcp_config_status\":$dhcp_config_status}" | jq .
+    jq -n --arg dns_type "$dns_type" --arg dns_server "$display_dns_server" \
+        --arg bootstrap_dns_server "$bootstrap_dns_server" --arg lte_detail "$lte_detail" \
+        --argjson dns_status "$dns_status" --argjson dns_on_router "$dns_on_router" \
+        --argjson bootstrap_dns_status "$bootstrap_dns_status" --argjson dhcp_config_status "$dhcp_config_status" \
+        --argjson lte_status "$lte_status" \
+        '{dns_type:$dns_type,dns_server:$dns_server,dns_status:$dns_status,dns_on_router:$dns_on_router,
+          bootstrap_dns_server:$bootstrap_dns_server,bootstrap_dns_status:$bootstrap_dns_status,
+          dhcp_config_status:$dhcp_config_status,lte_status:$lte_status,lte_detail:$lte_detail}'
 }
 
 check_dhcp_has_podkop_dns() {
-    # Only the primary dnsmasq instance is managed by podkop
-    # (dnsmasq_configure touches @dnsmasq[0]); extra sections, e.g. for a
-    # guest wifi, must not fail the check.
-    [ "$_podkop_dhcp_checked" = 1 ] && return 0
-    _podkop_dhcp_checked=1
     local server_list cachesize noresolv server_found
     config_get server_list "$1" "server"
     config_get cachesize "$1" "cachesize"
@@ -2458,43 +2290,7 @@ check_sing_box() {
 }
 
 check_fakeip() {
-    # Superset JSON for both LuCI frontends. The upstream 3-check UI reads
-    # top-level fakeip/IP; a stale cached UFI 6-check UI reads version:1 and
-    # the local_* fields. Always valid JSON, even if the test server is down.
-    local domain=fakeip.podkop.fyi answer='' router_answer=''
-    local local_ok=false router_ok=false route_ok=false
-    local ext_ok=false ext_fakeip=false ext_ip="" ext_status=unavailable
-    local response
-    answer=$(dig +time=2 +tries=1 +short @127.0.0.42 "$domain" A 2>/dev/null \
-        | awk -F. 'NF==4 && $1==198 && ($2==18 || $2==19) {
-            v=1; for(i=1;i<=4;i++) if($i !~ /^[0-9]+$/ || $i+0>255) v=0
-            if(v){print; exit}}') || answer=''
-    router_answer=$(dig +time=2 +tries=1 +short @127.0.0.1 "$domain" A 2>/dev/null \
-        | awk -F. 'NF==4 && $1==198 && ($2==18 || $2==19) {
-            v=1; for(i=1;i<=4;i++) if($i !~ /^[0-9]+$/ || $i+0>255) v=0
-            if(v){print; exit}}') || router_answer=''
-    [ -z "$answer" ] || local_ok=true
-    [ -z "$router_answer" ] || router_ok=true
-    # The installer registers the table by name ("lookup podkop"); accept
-    # both the name and the numeric id, otherwise the check can never pass.
-    if ip -4 rule show 2>/dev/null | grep -Eq "fwmark 0x100000/0x100000.*lookup ($RT_TABLE_NAME|105)( |$)" \
-       && ip -4 route show table 105 2>/dev/null | grep -Eq '^local (default|0\.0\.0\.0/0) dev lo( |$)'; then
-        route_ok=true
-    fi
-    response=$(curl --noproxy '*' --connect-timeout 2 --max-time 4 -fsS "https://$domain/check" 2>/dev/null) || response=''
-    if printf '%s' "$response" | jq -e 'type=="object" and (.fakeip|type=="boolean")' >/dev/null 2>&1; then
-        ext_ok=true; ext_status=completed
-        ext_fakeip=$(printf '%s' "$response" | jq -r '.fakeip')
-        ext_ip=$(printf '%s' "$response" | jq -r '.IP // ""')
-    fi
-    jq -n --argjson local_fakeip "$local_ok" --argjson dnsmasq_fakeip "$router_ok" \
-        --argjson policy_route "$route_ok" --arg singbox_answer "$answer" \
-        --arg router_answer "$router_answer" --argjson external_available "$ext_ok" \
-        --arg external_status "$ext_status" --argjson fakeip "$ext_fakeip" --arg ip "$ext_ip" \
-        '{version:1, local_fakeip:$local_fakeip, dnsmasq_fakeip:$dnsmasq_fakeip,
-          policy_route:$policy_route, singbox_answer:$singbox_answer,
-          router_answer:$router_answer, external_available:$external_available,
-          external_status:$external_status, fakeip:$fakeip, IP:$ip}'
+    sh "$PODKOP_LIB/ufi_fakeip_check.sh"
 }
 
 #######################################
@@ -2923,27 +2719,19 @@ global_check() {
     local fakeip_check_json
     fakeip_check_json=$(check_fakeip)
 
-    if [ -n "$fakeip_check_json" ]; then
-        local fakeip_status
-
-        fakeip_status=$(echo "$fakeip_check_json" | jq -r '.fakeip // false')
-
-        if [ "$fakeip_status" = "true" ]; then
-            print_global "✅ Router DNS is routed through sing-box"
+    if printf '%s' "$fakeip_check_json" | jq -e '.local_fakeip and .dnsmasq_fakeip and .policy_route' >/dev/null 2>&1; then
+        print_global "✅ Local FakeIP allocation, dnsmasq forwarding and marked route work"
+    else
+        print_global "❌ A local FakeIP/DNS/policy-route check failed; see check_fakeip JSON"
+    fi
+    if printf '%s' "$fakeip_check_json" | jq -e '.external_available' >/dev/null 2>&1; then
+        if printf '%s' "$fakeip_check_json" | jq -e '.fakeip' >/dev/null 2>&1; then
+            print_global "✅ External router FakeIP test passed"
         else
-            print_global "⚠️ Router DNS is NOT routed through sing-box"
+            print_global "⚠️ External router test responded without FakeIP"
         fi
     else
-        print_global "❌ Failed to get FakeIP info"
-    fi
-
-    local fakeip_address
-    fakeip_address=$(dig +short @127.0.0.42 $FAKEIP_TEST_DOMAIN)
-
-    if echo "$fakeip_address" | grep -q "^198\.18\."; then
-        print_global "✅ Sing-box works with FakeIP: $fakeip_address"
-    else
-        print_global "❌ Sing-box does NOT work with FakeIP: $fakeip_address"
+        print_global "⚠️ External FakeIP test is unavailable; end-to-end interception is not verified"
     fi
 }
 
@@ -2956,6 +2744,7 @@ Available commands:
     stop                    Stop podkop service
     reload                  Reload podkop configuration
     restart                 Restart podkop service
+    main                    Run main podkop process
     list_update             Update domain lists
     check_proxy             Check proxy connectivity
     check_nft               Check NFT rules
@@ -2979,130 +2768,7 @@ Available commands:
 EOF
 }
 
-# UFI001C_CLOUDFLARE_PATCH_V1. No daemon, timer, network/Wi-Fi reload or cache deletion.
-cloudflare_first_proxy() {
-    local kind
-    [ -z "$cloudflare_selected" ] || return 0
-    config_get kind "$1" connection_type
-    [ "$kind" != proxy ] || cloudflare_selected="$1"
-}
-
-cloudflare_proxy_section() {
-    local cloudflare_selected kind
-    config_get cloudflare_selected settings cloudflare_dns_section
-    if [ -z "$cloudflare_selected" ]; then
-        config_get kind dns_only connection_type
-        if [ "$kind" = proxy ] && section_configured dns_only; then
-            cloudflare_selected=dns_only
-        else
-            foreach_configured_section cloudflare_first_proxy
-        fi
-    fi
-    case "$cloudflare_selected" in ''|*[!A-Za-z0-9_]*) return 1;; esac
-    config_get kind "$cloudflare_selected" connection_type
-    [ "$kind" = proxy ] && section_configured "$cloudflare_selected" || return 1
-    printf '%s\n' "$cloudflare_selected"
-}
-
-sing_box_cloudflare_patch() {
-    local enabled section tag
-    config_get_bool enabled settings cloudflare_dns_patch 0
-    [ "$enabled" = 1 ] || return 0
-    section=$(cloudflare_proxy_section) || { log 'Cloudflare requires a configured proxy section' error; return 1; }
-    tag=$(get_outbound_tag_by_section "$section")
-    config=$(printf '%s\n' "$config" | jq -e --arg tag "$tag" '
-      def proxy_leaves($cfg; $name; $seen):
-        if ($seen | index($name)) != null or ($seen | length) >= 16 then
-          error("Cyclic Cloudflare proxy group")
-        else [$cfg.outbounds[]? | select(.tag == $name)] as $hits |
-          if ($hits|length) != 1 then error("Missing Cloudflare proxy outbound")
-          else $hits[0] as $o |
-            if ($o.detour // "") != "" then error("Chained Cloudflare proxy is unsupported")
-            elif $o.type == "selector" or $o.type == "urltest" then
-              (($o.outbounds // []) + ($o.fallbacks // [])) as $children |
-              if ($children|length) == 0 then error("Empty Cloudflare proxy group")
-              elif ($o.type == "selector" and ($o.default // "") != "" and
-                    ($children|index($o.default)) == null) then error("Invalid proxy default")
-              else [$children[] | proxy_leaves($cfg; .; $seen + [$name])[]] | unique end
-            elif (["vless","trojan","shadowsocks","vmess","socks","http","hysteria2","tuic","anytls"]|index($o.type)) != null and
-                 (($o.server // "")|length) > 0 then [$name]
-            else error("Cloudflare DNS requires proxies only") end
-          end
-        end;
-      . as $cfg | proxy_leaves($cfg; $tag; []) as $leaves |
-      if ([.dns.servers[]? | select(.tag == "dns-server")]|length) != 1 or
-         ([.dns.servers[]? | select(.tag == "bootstrap-dns-server")]|length) != 1 then
-        error("Unexpected DNS configuration")
-      else
-        (.dns.servers[] | select(.tag == "dns-server")) = {
-          type:"https", tag:"dns-server", server:"1.1.1.1", server_port:443,
-          path:"/dns-query", detour:$tag,
-          tls:{enabled:true, server_name:"cloudflare-dns.com"}} |
-        (.dns.servers[] | select(.tag == "bootstrap-dns-server")) = {
-          type:"tcp", tag:"bootstrap-dns-server", server:"77.88.8.8", server_port:53} |
-        (.outbounds[] | select((.server // "") != "")).domain_resolver =
-          {server:"bootstrap-dns-server", strategy:"ipv4_only"} |
-        .route.rule_set = ((.route.rule_set // []) | map(if .type == "remote" then .download_detour = $tag else . end)) |
-        .inbounds = ([.inbounds[]? | select(.tag != "service-mixed-in")] + [{
-          type:"mixed",tag:"service-mixed-in",listen:"127.0.0.1",listen_port:4534}]) |
-        .route.rules = ([{inbound:["service-mixed-in"],action:"route",outbound:$tag}] +
-          [.route.rules[]? | select(((.inbound // [])|index("service-mixed-in")) == null)])
-      end') || { log 'Cannot configure Cloudflare tunnel' error; return 1; }
-}
-
-cloudflare_doh_query_ok() (
-    # Probe the same outbound and endpoint as the real resolver, not the cache
-    # and not the operator-blocked direct DoH path.
-    local conf work
-    config_get conf settings config_path /etc/sing-box/config.json
-    jq -e '
-      . as $c | [.dns.servers[]? | select(.tag == "dns-server")] as $d |
-      ($d|length) == 1 and $d[0].type == "https" and $d[0].server == "1.1.1.1" and
-      $d[0].path == "/dns-query" and ($d[0].detour // "") != "" and
-      any(.inbounds[]?; .tag == "service-mixed-in" and .listen == "127.0.0.1" and .listen_port == 4534) and
-      any(.route.rules[]?; .outbound == $d[0].detour and
-          ((.inbound // [])|index("service-mixed-in")) != null)
-    ' "$conf" >/dev/null || return 1
-    work=$(mktemp -d /tmp/ufi-cf-probe.XXXXXX) || return 1
-    trap 'rm -rf "$work"' EXIT HUP INT TERM
-    printf '\000\000\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$work/query"
-    curl --noproxy '' --proxy http://127.0.0.1:4534 --fail --silent --show-error \
-      --connect-timeout 4 --max-time 12 \
-      -H 'Content-Type: application/dns-message' -H 'Accept: application/dns-message' \
-      --data-binary "@$work/query" https://1.1.1.1/dns-query > "$work/answer" 2>/dev/null || return 1
-    set -- $(hexdump -v -n 12 -e '1/1 "%u "' "$work/answer")
-    [ "$#" = 12 ] || return 1
-    [ "$1" = 0 ] && [ "$2" = 0 ] && [ "$(($3 & 128))" != 0 ] &&
-      [ "$(($3 & 2))" = 0 ] && [ "$(($4 & 15))" = 0 ] &&
-      [ "$(($5 * 256 + $6))" = 1 ] && [ "$(($7 * 256 + $8))" -gt 0 ] &&
-      [ "$(wc -c < "$work/answer")" -gt 33 ]
-)
-
-cloudflare_generate() {
-    local cloudflare_output="$1"
-    mkdir -p "$TMP_RULESET_FOLDER" || return 1
-    sing_box_save_config() {
-        sing_box_cm_save_config_to_file "$config" "$cloudflare_output" || return 1
-        sing-box check -c "$cloudflare_output" >/dev/null 2>&1
-    }
-    sing_box_init_config
-}
-
-cloudflare_status() {
-    local enabled mode=custom status=0
-    config_get_bool enabled settings cloudflare_dns_patch 0
-    if [ "$enabled" = 1 ]; then
-        mode=cloudflare_proxy
-        cloudflare_doh_query_ok && status=1
-    fi
-    printf '{"mode":"%s","dns_status":%s}\n' "$mode" "$status"
-}
-
 case "$1" in
-cloudflare_status) cloudflare_status ;;
-cloudflare_section) cloudflare_proxy_section ;;
-cloudflare_check) cloudflare_doh_query_ok ;;
-cloudflare_generate) cloudflare_generate "$2" ;;
 start)
     start
     ;;
@@ -3114,6 +2780,9 @@ reload)
     ;;
 restart)
     restart
+    ;;
+main)
+    main
     ;;
 list_update)
     list_update
