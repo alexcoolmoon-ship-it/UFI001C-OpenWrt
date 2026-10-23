@@ -50,7 +50,13 @@ def main():
         if hasattr(stream, 'reconfigure'):
             stream.reconfigure(encoding='utf-8', errors='replace', line_buffering=True, write_through=True)
     root = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
-    windows = root / 'edlclient/Windows'
+    # PyInstaller >= 6 extracts to _MEIPASS with bundled data files under
+    # _internal/. The DLL was silently not found when only the old layout
+    # was checked, causing "NoBackendError: No backend available" even
+    # though libusb-1.0.dll ships with the kit.
+    _candidates = [root / 'edlclient/Windows', root / '_internal/edlclient/Windows']
+    windows = next((c for c in _candidates if (c / 'libusb-1.0.dll').is_file()),
+                   _candidates[0])
     handle = os.add_dll_directory(str(windows)) if os.name == 'nt' else None
     os.environ['PATH'] = str(windows) + os.pathsep + os.environ.get('PATH', '')
     # pyusb discovers libusb via ctypes.util.find_library, which does NOT see
