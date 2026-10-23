@@ -17,7 +17,7 @@ from test_stock_install import firmware_metadata
 from test_portable_runtime import make_runtime
 import stock_install
 
-PREFIX = f'UFI001C-{stock_install.VERSION}/'
+PREFIX = ''
 
 
 class ReleaseTests(unittest.TestCase):
@@ -57,7 +57,7 @@ class ReleaseTests(unittest.TestCase):
     def test_single_zip_has_installer_images_reports_but_no_private_files(self):
         (self.images / 'emmc.bin').write_bytes(b'private full backup must not be packed')
         (self.images / 'podkop.saved').write_bytes(b'private proxy must not be packed')
-        (self.images / 'INSTALL-RU.md').write_text('test instruction')
+        (self.images / 'INSTALL-RU.txt').write_text('test instruction')
         output = self.root / 'release.zip'
         p = subprocess.run([sys.executable, str(PORT / 'package_release.py'), str(self.images),
                             str(output), '--commit', 'a' * 40, '--windows-runtime', str(self.runtime)], capture_output=True, text=True)
@@ -65,8 +65,8 @@ class ReleaseTests(unittest.TestCase):
         with zipfile.ZipFile(output) as archive:
             self.assertIsNone(archive.testzip())
             names = {Path(n).name for n in archive.namelist()}
-            self.assertTrue({'INSTALL.cmd','RESTORE.cmd','boot.img','system.img','ACCESS.txt',
-                             'routing-rootfs-check.json','release-info.json','INSTALL-RU.md'} <= names)
+            self.assertTrue({'INSTALL.cmd','UPDATE.cmd','RESTORE.cmd','boot.img','system.img','ACCESS.txt',
+                             'routing-rootfs-check.json','release-info.json','INSTALL-RU.txt'} <= names)
             self.assertFalse({'emmc.bin','podkop.saved'} & names)
             self.assertIn(PREFIX + 'runtime/UFI001C-Installer.exe', archive.namelist())
             self.assertIn(PREFIX + 'runtime/edl/UFI-EDL.exe', archive.namelist())
