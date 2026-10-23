@@ -112,6 +112,22 @@ def main():
         rc = _ensure_usb_backend(windows)
         if rc:
             return rc
+    # Auto-inject --loader for unfused MSM8916 (UFI001C) when not specified.
+    # The loader DB lookup fails for this PK_HASH, but the device accepts any
+    # MSM8916 loader. Bypass the DB by passing the loader explicitly.
+    if '--loader' not in sys.argv:
+        _loader = None
+        for _lp in [(root / 'Loaders' / '007050e100000000_cc3153a80293939b_fhprg.bin'),
+                    (root / '_internal' / 'Loaders' / '007050e100000000_cc3153a80293939b_fhprg.bin'),
+                    (root / 'Loaders' / 'qualcomm' / 'factory' / 'msm8916' / '007050e100000000_cc3153a80293939b_fhprg.bin'),
+                    (root / '_internal' / 'Loaders' / 'qualcomm' / 'factory' / 'msm8916' / '007050e100000000_cc3153a80293939b_fhprg.bin')]:
+            if _lp.is_file():
+                _loader = str(_lp)
+                break
+        if _loader:
+            # Insert after script name: edl.py --loader <path> <cmd...>
+            sys.argv.insert(1, _loader)
+            sys.argv.insert(1, '--loader')
     sys.argv[0] = str(root / 'edl.py')
     # The upstream code and Firehose command implementation are not patched.
     runpy.run_path(sys.argv[0], run_name='__main__')
