@@ -296,8 +296,9 @@ class StockTests(unittest.TestCase):
             usb.assert_not_called()
         with zipfile.ZipFile(output) as z:
             self.assertIsNone(z.testzip())
-            prefix = f'UFI001C-{s.VERSION}/'
+            prefix = ''
             self.assertIn(prefix + 'INSTALL.cmd',z.namelist())
+            self.assertIn(prefix + 'UPDATE.cmd',z.namelist())
             self.assertIn(prefix + 'RESTORE.cmd',z.namelist())
             self.assertIn(prefix + 'edl_watchdog.py',z.namelist())
             self.assertIn(prefix + 'chunk_backup.py',z.namelist())
