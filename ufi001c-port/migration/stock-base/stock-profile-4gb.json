@@ -1,7 +1,10 @@
 {
   "id": "ufi001c-4gb-ufi001bc-20211121",
   "disk_bytes": 3875536896,
-  "stock_modem_sha256": "55579120eb41d07c25c98b93dc02631fe32737c1ca536e35d24cee97930ca646",
+  "stock_modem_sha256": [
+    "55579120eb41d07c25c98b93dc02631fe32737c1ca536e35d24cee97930ca646",
+    "c64997f87be2dc3253b8c75ad072d597ffaef564bf515ad7a3bed793b5f22b0a"
+  ],
   "geometry": [
     [
       "modem",
@@ -139,5 +142,8 @@
       7569374
     ]
   ],
-  "scope": "UFI001C_MB_V01 4GB GPT observed 2026-10-11. Exact geometry AND same known factory radio SHA256 required; physical boot acceptance pending. No wildcard size matching."
+  "scope": "UFI001C_MB_V01 4GB GPT observed 2026-10-11. Exact geometry AND same known factory radio SHA256 required; physical boot acceptance pending. No wildcard size matching.",
+  "firmware_labels": [
+    "UFI001CT 20211106"
+  ]
 }
