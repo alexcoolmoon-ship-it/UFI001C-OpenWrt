@@ -824,47 +824,47 @@ msgstr "Секретный ключ YACD"
 msgid "You can select Output Network Interface, by default autodetect"
 msgstr "Вы можете выбрать выходной сетевой интерфейс, по умолчанию он определяется автоматически."
 
-msgid "Automatic (first configured proxy)"
-msgstr "Автоматически — первая заполненная прокси-секция"
+msgid "Cloudflare DoH via proxy"
+msgstr "Cloudflare DoH через прокси"
 
-msgid "Proxy for encrypted DNS"
-msgstr "Прокси для защищённого DNS"
+msgid "Use Yandex 77.88.8.8 over TCP only to resolve proxy hostnames, then send DNS to Cloudflare 1.1.1.1 over HTTPS through the proxy."
+msgstr "Яндекс 77.88.8.8 по TCP используется только для адресов прокси. Основные DNS-запросы идут к Cloudflare 1.1.1.1 по HTTPS через прокси."
 
-msgid "DNS and list downloads use this proxy. Automatic selection ignores empty sections and follows renamed sections."
-msgstr "DNS и списки загружаются через этот прокси. Автовыбор пропускает пустые секции и работает после их переименования."
+msgid "Proxy section for Cloudflare"
+msgstr "Секция прокси для Cloudflare"
 
-msgid "Sing-box allocates a FakeIP address"
-msgstr "Sing-box выдаёт адрес FakeIP"
+msgid "Automatic selects the configured dns_only proxy section, or the first configured proxy section."
+msgstr "Автовыбор: настроенная прокси-секция dns_only или первая настроенная прокси-секция."
 
-msgid "Router DNS returns a FakeIP address"
-msgstr "DNS модема возвращает адрес FakeIP"
+msgid "Automatic"
+msgstr "Автоматически"
 
-msgid "Marked IPv4 traffic has a local route"
-msgstr "Маршрут для помеченного IPv4-трафика установлен"
+msgid "Cloudflare DNS check"
+msgstr "Проверка DNS Cloudflare"
 
-msgid "External router FakeIP test"
-msgstr "Внешняя проверка FakeIP с модема"
+msgid "Save and apply settings first. This checks a real Cloudflare DNS response through the running proxy."
+msgstr "Сначала сохраните и примените настройки. Кнопка проверяет настоящий DNS-ответ Cloudflare через работающий прокси."
 
-msgid "Test server unavailable; result unknown"
-msgstr "Тестовый сервер недоступен; результат не определён"
+msgid "Check Cloudflare"
+msgstr "Проверить Cloudflare"
 
-msgid "Direct and proxy public IP comparison"
-msgstr "Сравнение внешнего IP напрямую и через прокси"
+msgid "Cloudflare mode is not applied. Save and apply settings, then check again."
+msgstr "Режим Cloudflare не применён. Сохраните и примените настройки, затем повторите проверку."
 
-msgid "Same public IP; this alone does not prove failure"
-msgstr "Одинаковый внешний IP сам по себе не означает ошибку"
+msgid "Cloudflare DoH through the proxy: working."
+msgstr "Cloudflare DoH через прокси работает."
 
-msgid "Check unavailable"
-msgstr "Проверка недоступна"
+msgid "Cloudflare did not answer through the proxy. Check that Podkop is running and the selected proxy section is working."
+msgstr "Cloudflare не ответил через прокси. Проверьте, что Podkop запущен и выбранная прокси-секция работает."
 
-msgid "Some checks could not be completed"
-msgstr "Часть проверок не удалось выполнить"
+msgid "Cloudflare check could not complete. Check that Podkop is running and try again."
+msgstr "Не удалось завершить проверку Cloudflare. Проверьте, что Podkop запущен, и повторите проверку."
 
-msgid "Problems detected"
-msgstr "Обнаружены проблемы"
+msgid "Bootstrap transport"
+msgstr "Транспорт bootstrap"
 
-msgid "Package and service downloads via proxy"
-msgstr "Загрузка пакетов и служебных файлов через прокси"
+msgid "Protocol used for the Yandex bootstrap DNS (77.88.8.8). The diagnostic check probes the selected protocol."
+msgstr "Протокол для Yandex bootstrap DNS (77.88.8.8). Диагностика проверяет выбранный протокол."
 
-msgid "Requires a running proxy. Downloads fail if it is unavailable; no direct fallback."
-msgstr "Нужен работающий прокси. При его недоступности загрузка остановится."
+msgid "TCP (default)"
+msgstr "TCP (по умолчанию)"
