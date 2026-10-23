@@ -1155,47 +1155,8 @@ msgstr ""
 msgid "You can select Output Network Interface, by default autodetect"
 msgstr ""
 
-msgid "Cloudflare DoH via proxy"
+msgid "Package and service downloads via proxy"
 msgstr ""
 
-msgid "Use Yandex 77.88.8.8 over TCP only to resolve proxy hostnames, then send DNS to Cloudflare 1.1.1.1 over HTTPS through the proxy."
-msgstr ""
-
-msgid "Proxy section for Cloudflare"
-msgstr ""
-
-msgid "Automatic selects the configured dns_only proxy section, or the first configured proxy section."
-msgstr ""
-
-msgid "Automatic"
-msgstr ""
-
-msgid "Cloudflare DNS check"
-msgstr ""
-
-msgid "Save and apply settings first. This checks a real Cloudflare DNS response through the running proxy."
-msgstr ""
-
-msgid "Check Cloudflare"
-msgstr ""
-
-msgid "Cloudflare mode is not applied. Save and apply settings, then check again."
-msgstr ""
-
-msgid "Cloudflare DoH through the proxy: working."
-msgstr ""
-
-msgid "Cloudflare did not answer through the proxy. Check that Podkop is running and the selected proxy section is working."
-msgstr ""
-
-msgid "Cloudflare check could not complete. Check that Podkop is running and try again."
-msgstr ""
-
-msgid "Bootstrap transport"
-msgstr ""
-
-msgid "Protocol used for the Yandex bootstrap DNS (77.88.8.8). The diagnostic check probes the selected protocol."
-msgstr ""
-
-msgid "TCP (default)"
+msgid "Requires a running proxy. Downloads fail if it is unavailable; no direct fallback."
 msgstr ""
