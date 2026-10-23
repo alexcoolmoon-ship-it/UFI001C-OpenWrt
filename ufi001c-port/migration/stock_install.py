@@ -34,7 +34,7 @@ from edl_watchdog import run_edl, EDLError
 from chunk_backup import full_backup, read_range, exclusive
 from radio_report import summarize as summarize_radio
 
-VERSION = '3.2.7-clean'
+VERSION = '3.2.9-clean'
 SECTOR = 512
 GIB = 1024**3
 NV = ('modemst1', 'modemst2', 'fsg', 'fsc', 'sec')
@@ -46,11 +46,11 @@ LIMITS = {'boot.img': 64*1024**2, 'system.img': GIB,
           'xhttp-validation.json': 65536, 'addons.lock.json': 65536,
           'routing-rootfs-check.json': 65536, 'kernel-routing-check.txt': 16384,
           'validation.json': 65536, 'release-info.json': 16384,
-          'INSTALL-RU.md': 65536, 'VALIDATION-v3.1.2.md': 65536,
+          'INSTALL-RU.txt': 65536, 'VALIDATION-v3.1.2.md': 65536,
           'VALIDATION-v3.1.3.md': 65536, 'VALIDATION-v3.1.4.md': 65536, 'VALIDATION-v3.1.5.md': 65536, 'VALIDATION-v3.1.6.md': 65536,
           'VALIDATION-v3.2.0.md': 65536, 'VALIDATION-v3.2.1.md': 65536, 'VALIDATION-v3.2.2.md': 65536,
           'VALIDATION-v3.2.3.md': 65536, 'VALIDATION-v3.2.4.md': 65536, 'VALIDATION-v3.2.5.md': 65536, 'VALIDATION-v3.2.6.md': 65536,
-          'VALIDATION-v3.2.7.md': 65536}
+          'VALIDATION-v3.2.7.md': 65536, 'VALIDATION-v3.2.8.md': 65536, 'VALIDATION-v3.2.9.md': 65536}
 
 
 def digest_bytes(data):
@@ -595,7 +595,7 @@ PACKAGE_FILES = ('stock_install.py', 'ufi-install.py', 'radio_backup.py', 'radio
                  'portable_runtime.py', 'runtime_manifest.py', 'windows_entry.py', 'windows_edl.py', 'windows-runtime.lock.json',
                  'RUN.cmd', 'CHECK-PC.cmd', 'DRIVER-HELP.cmd', 'DRIVER-RU.txt',
                  'CHECK-LTE.cmd', 'ufi-postboot-check.sh',
-                 'INSTALL.cmd', 'RESUME.cmd', 'RESTORE.cmd', 'MAKE-BUNDLE.cmd', 'STOCK-CHECK.cmd', 'CHECK-BACKUP.cmd',
+                 'INSTALL.cmd', 'UPDATE.cmd', 'RESUME.cmd', 'RESTORE.cmd', 'MAKE-BUNDLE.cmd', 'STOCK-CHECK.cmd', 'CHECK-BACKUP.cmd',
                  'README-STOCK-RU.md', 'VALIDATION-STOCK.md', 'BASE-SOURCES.md')
 
 
@@ -622,9 +622,9 @@ def bundle(args):
         update.prepare_images(images, prepared)
         building=work/'bundle.zip'
         with zipfile.ZipFile(building, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-            # The top-level folder already has the final name: unzip once and
-            # run INSTALL.cmd, no renaming or moving files around.
-            prefix=f'UFI001C-{VERSION}/'
+            # Flat layout: unzip once and run INSTALL.cmd / UPDATE.cmd,
+            # no renaming, no subfolders.
+            prefix = ''
             for name in PACKAGE_FILES: archive.write(HERE/name, prefix+name)
             for path in sorted((HERE/'stock-base').iterdir()):
                 if path.is_file(): archive.write(path, prefix+'stock-base/'+path.name)
@@ -759,6 +759,29 @@ def probe(args):
     print('Записи в память модема не было. Полный бэкап ещё не создан.', flush=True)
 
 
+def update_firmware(args):
+    """Update an already-flashed modem: rewrite only boot+system via EDL.
+
+    The latest backup is found automatically in the backups folder; the user
+    just double-clicks UPDATE.cmd, no paths to type.
+    """
+    backups = Path(args.backups)
+    candidates = sorted(backups.glob('backup-*/emmc.bin'),
+                        key=lambda p: p.stat().st_mtime, reverse=True) if backups.is_dir() else []
+    if not candidates:
+        raise ValueError('Бэкап не найден в ' + str(backups) +
+                         '. Сначала прошейте модем через INSTALL.cmd (он создаст бэкап).')
+    backup = candidates[0]
+    print('Использую бэкап: ' + str(backup), flush=True)
+    print('Подключите модем в EDL-режиме (с зажатой кнопкой), затем отпустите её.', flush=True)
+    cmd = [sys.executable, str(HERE / 'ufi-install.py'), 'update',
+           '--backup', str(backup), '--images', str(HERE),
+           '--edl-root', str(args.edl_root)]
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        raise ValueError('Обновление не удалось (код ' + str(result.returncode) + ').')
+
+
 def resume_install(args):
     args.resume = args.resume or select_path('Выберите backup-state.json прерванного чтения', args.backups, 'resume')
     return install(args)
@@ -766,7 +789,7 @@ def resume_install(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['install', 'resume', 'restore', 'bundle', 'probe', 'check-backup'])
+    parser.add_argument('action', choices=['install', 'update', 'resume', 'restore', 'bundle', 'probe', 'check-backup'])
     parser.add_argument('--version', action='version', version='UFI stock installer '+VERSION)
     parser.add_argument('--edl-root', type=Path, default=Path(os.environ.get('UFI_EDL_ROOT', str(Path.home()/'edl'))))
     parser.add_argument('--backups', type=Path, default=Path.home()/'UFI001C-backups')
@@ -778,7 +801,7 @@ def main():
     args = parser.parse_args()
     print('UFI001C: простой переход со стока — '+VERSION, flush=True)
     try:
-        {'install': install, 'resume': resume_install, 'restore': restore, 'bundle': bundle,
+        {'install': install, 'update': update_firmware, 'resume': resume_install, 'restore': restore, 'bundle': bundle,
          'probe': probe, 'check-backup': check_backup}[args.action](args)
     except (OSError, ValueError, EOFError, zipfile.BadZipFile, subprocess.CalledProcessError) as exc:
         if args.action in ('check-backup', 'probe', 'bundle'):
