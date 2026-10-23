@@ -4,7 +4,7 @@ PKG_NAME:=podkop
 
 PKG_VERSION:=0.7.24
 
-PKG_RELEASE:=2
+PKG_RELEASE:=103
 
 PKG_MAINTAINER:=ITDog <podkop@itdog.info>
 PKG_LICENSE:=GPL-2.0-or-later
@@ -14,7 +14,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/podkop
 	SECTION:=net
 	CATEGORY:=Network
-	DEPENDS:=+podkop-engine +curl +jq +kmod-nft-tproxy +coreutils-base64 +bind-dig +ip-full
+	DEPENDS:=+podkop-engine +curl +jq +kmod-nft-tproxy +coreutils-base64 +coreutils-od +bind-dig +ip-full
 	CONFLICTS:=https-dns-proxy nextdns luci-app-passwall luci-app-passwall2
 	TITLE:=Domain routing app
 	URL:=https://podkop.net
@@ -48,12 +48,10 @@ endef
 define Package/podkop/install
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/etc/init.d/podkop $(1)/etc/init.d/podkop
+	$(INSTALL_BIN) ./files/etc/init.d/ufi-dns-health $(1)/etc/init.d/ufi-dns-health
 
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/etc/config/podkop $(1)/etc/config/podkop
-
-	$(INSTALL_DIR) $(1)/etc/uci-defaults
-	$(INSTALL_BIN) ./files/etc/uci-defaults/51_ufi001c-wifi-password $(1)/etc/uci-defaults/51_ufi001c-wifi-password
 
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) ./files/usr/bin/podkop $(1)/usr/bin/podkop
