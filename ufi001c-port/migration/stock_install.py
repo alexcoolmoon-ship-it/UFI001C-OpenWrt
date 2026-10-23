@@ -32,7 +32,25 @@ _spec.loader.exec_module(update)
 from radio_backup import read_at, read_gpt, copy_and_hash
 from edl_watchdog import run_edl, EDLError
 from chunk_backup import full_backup, read_range, exclusive
-from radio_report import summarize as summarize_radio
+def summarize_radio(data, profile):
+    if not 512 <= len(data) <= 256 * 1024**2:
+        raise ValueError('Unexpected factory radio partition length')
+    digest = hashlib.sha256(data).hexdigest()
+    expected = profile['stock_modem_sha256']
+    _exp_list = [expected] if isinstance(expected, str) else expected
+    _matches = digest in _exp_list
+    # Export only narrowly recognized firmware build labels, never all strings.
+    versions = sorted({m.decode('ascii') for m in re.findall(
+        rb'\bUFI[0-9A-Z_-]{1,24}[ \t_]+20[0-9]{6}\b', data)})[:16]
+    return {'format': 1, 'profile': profile['id'],
+            'radio_bytes': len(data), 'stock_modem_sha256': digest,
+            'expected_stock_modem_sha256': expected,
+            'stock_modem_hash_matches': _matches,
+            'firmware_labels': versions, 'nv_exported': False,
+            'compatibility': 'known-radio-hash' if _matches else 'needs-review',
+            'meaning': 'A partition hash mismatch alone does not identify a board revision. '
+                       'A matching label alone does not prove compatible RF hardware.',
+            'hardware_boot_test': 'not performed'}
 
 VERSION = '3.2.9-clean'
 SECTOR = 512
