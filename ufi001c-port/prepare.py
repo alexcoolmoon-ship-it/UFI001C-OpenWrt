@@ -7,7 +7,6 @@ import subprocess
 from pathlib import Path
 from prepare_engine import prepare as prepare_engine
 from check_radio_source import verify as verify_radio
-from prepare_clean import apply as apply_clean
 
 here = Path(__file__).resolve().parent
 args = argparse.ArgumentParser()
@@ -40,15 +39,20 @@ else:
     run("git", "apply", "--reverse", "--check", patch)
 shutil.copytree(here / "overlay", root, dirs_exist_ok=True)
 prepare_engine(root)
-apply_clean(root)
 shutil.copy2(here / "feeds.conf", root / "feeds.conf")
 shutil.copy2(root / "ufi001c.config", root / ".config")
 # Force package metadata to include the newly added driver definitions.
 for file in ("package/kernel/linux/Makefile", "package/kernel/mac80211/Makefile"):
     (root / file).touch()
+keyfile = root / "files/etc/ufi001c-wifi-key"
+keyfile.parent.mkdir(parents=True, exist_ok=True)
+if not keyfile.exists():
+    # Fixed default WiFi password (user-approved 23.10.2026).
+    keyfile.write_text("1234567890\n")
+keyfile.chmod(0o600)
 (root / "ACCESS.txt").write_text(
     "Wi-Fi: OpenWrt-25-UFI001C\n"
-    "Wi-Fi password: none (open network)\n"
+    f"Wi-Fi password: {keyfile.read_text().strip()}\n"
     "LuCI: http://192.168.1.1/\n"
     "Username: root\n"
     "Initial administrator password: empty; set it after signing in.\n"

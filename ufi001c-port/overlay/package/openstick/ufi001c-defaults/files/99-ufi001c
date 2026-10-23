@@ -2,10 +2,14 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 [ "$(cat /tmp/sysinfo/board_name)" = "thwc,ufi001c" ] || exit 0
-# A preserved modem section belongs to the installed system. Do not reset its
-# LAN/Wi-Fi/APN while installing new defaults. Migrate its LTE policy separately.
-[ -z "$(uci -q get network.modem)" ] || exit 0
-# Wi-Fi is intentionally open (no password) on this build.
+# Fixed default WiFi password (user-approved 23.10.2026).
+# If the build keyfile is missing, fall back to the default instead of
+# leaving the network open.
+if [ -s /etc/ufi001c-wifi-key ]; then
+	wifi_key="$(cat /etc/ufi001c-wifi-key)"
+else
+	wifi_key="1234567890"
+fi
 
 uci -q batch <<EOF
 set network.br_lan=device
@@ -26,7 +30,7 @@ set network.modem.apn='internet'
 set network.modem.auto='1'
 set network.modem.autoconnect='1'
 set network.modem.allowedmode='4g'
-set network.modem.allowedbands='eutran-1|eutran-3|eutran-5|eutran-8|eutran-38|eutran-39|eutran-40|eutran-41'
+set network.modem.allowedbands='eutran-1|eutran-3|eutran-7'
 set wireless.radio0=wifi-device
 set wireless.radio0.type='mac80211'
 set wireless.radio0.phy='phy0'
@@ -39,8 +43,8 @@ set wireless.default_radio0.device='radio0'
 set wireless.default_radio0.network='lan'
 set wireless.default_radio0.mode='ap'
 set wireless.default_radio0.ssid='OpenWrt-25-UFI001C'
-set wireless.default_radio0.encryption='none'
-delete wireless.default_radio0.key
+set wireless.default_radio0.encryption='psk2'
+set wireless.default_radio0.key='$wifi_key'
 set luci.main.lang='ru'
 set system.@system[0].hostname='OpenWrt-UFI001C'
 commit network

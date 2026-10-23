@@ -296,15 +296,21 @@ class StockTests(unittest.TestCase):
             usb.assert_not_called()
         with zipfile.ZipFile(output) as z:
             self.assertIsNone(z.testzip())
-            prefix = ''
-            self.assertIn(prefix + 'INSTALL.cmd',z.namelist())
-            self.assertIn(prefix + 'UPDATE.cmd',z.namelist())
-            self.assertIn(prefix + 'RESTORE.cmd',z.namelist())
-            self.assertIn(prefix + 'edl_watchdog.py',z.namelist())
-            self.assertIn(prefix + 'chunk_backup.py',z.namelist())
-            self.assertIn(prefix + 'RESUME.cmd',z.namelist())
-            for name,data in original.items():self.assertEqual(z.read(prefix+name),data)
+            # Bundle root shows only the three beginner files.
+            self.assertIn('INSTALL.cmd',z.namelist())
+            self.assertIn('UPDATE.cmd',z.namelist())
+            self.assertIn('ИНСТРУКЦИЯ.txt',z.namelist())
+            # Everything else lives under tools/.
+            for name in ('RESTORE.cmd','RESUME.cmd','RUN.cmd','DRIVER-HELP.cmd',
+                         'stock_install.py','radio_report.py',
+                         'edl_watchdog.py','chunk_backup.py',
+                         'tools/drivers/README-RU.txt','tools/stock-base/gpt_both0.bin'):
+                self.assertIn('tools/'+name if not name.startswith('tools/') else name, z.namelist())
+            for name,data in original.items():self.assertEqual(z.read('tools/'+name),data)
             self.assertFalse(any('emmc.bin' in name or 'modemst1.bin' in name for name in z.namelist()))
+            # No helper .cmd/.txt leaks to the root.
+            roots=[n for n in z.namelist() if '/' not in n]
+            self.assertEqual(sorted(roots),['INSTALL.cmd','UPDATE.cmd','ИНСТРУКЦИЯ.txt'])
         self.assertEqual(output.with_suffix('.zip.sha256').read_text().split()[0],s.update.sha(output))
         with self.assertRaisesRegex(ValueError,'уже существует'):s.bundle(args)
 

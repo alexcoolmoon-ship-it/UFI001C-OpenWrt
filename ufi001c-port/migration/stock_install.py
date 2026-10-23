@@ -32,27 +32,9 @@ _spec.loader.exec_module(update)
 from radio_backup import read_at, read_gpt, copy_and_hash
 from edl_watchdog import run_edl, EDLError
 from chunk_backup import full_backup, read_range, exclusive
-def summarize_radio(data, profile):
-    if not 512 <= len(data) <= 256 * 1024**2:
-        raise ValueError('Unexpected factory radio partition length')
-    digest = hashlib.sha256(data).hexdigest()
-    expected = profile['stock_modem_sha256']
-    _exp_list = [expected] if isinstance(expected, str) else expected
-    _matches = digest in _exp_list
-    # Export only narrowly recognized firmware build labels, never all strings.
-    versions = sorted({m.decode('ascii') for m in re.findall(
-        rb'\bUFI[0-9A-Z_-]{1,24}[ \t_]+20[0-9]{6}\b', data)})[:16]
-    return {'format': 1, 'profile': profile['id'],
-            'radio_bytes': len(data), 'stock_modem_sha256': digest,
-            'expected_stock_modem_sha256': expected,
-            'stock_modem_hash_matches': _matches,
-            'firmware_labels': versions, 'nv_exported': False,
-            'compatibility': 'known-radio-hash' if _matches else 'needs-review',
-            'meaning': 'A partition hash mismatch alone does not identify a board revision. '
-                       'A matching label alone does not prove compatible RF hardware.',
-            'hardware_boot_test': 'not performed'}
+from radio_report import summarize as summarize_radio
 
-VERSION = '3.2.9-clean'
+VERSION = '3.2.10'
 SECTOR = 512
 GIB = 1024**3
 NV = ('modemst1', 'modemst2', 'fsg', 'fsc', 'sec')
@@ -188,10 +170,7 @@ def check_stock(dump, profile):
     if geometry != profile['geometry']:
         raise ValueError('Not the known factory UFI001C layout; no writes performed')
     with dump.open('rb') as f:
-        _expected = profile['stock_modem_sha256']
-        if isinstance(_expected, str):
-            _expected = [_expected]
-        if copy_and_hash(f, parts['modem']) not in _expected:
+        if copy_and_hash(f, parts['modem']) != profile['stock_modem_sha256']:
             raise ValueError('Different factory radio partition hash; board revision is NOT established. '
                              'No writes started. Run CHECK-BACKUP.cmd on the saved emmc.bin.')
         hashes = {name: copy_and_hash(f, parts[name]) for name in NV}
@@ -336,8 +315,23 @@ def make_plan(dump, profile, base, work, prepared):
     """Build every byte to write before starting a device mutation."""
     dump, base, work = Path(dump), Path(base), Path(work)
     stock, hashes = check_stock(dump, profile)
+    with dump.open('rb') as src:
+        nv_data = {name: read_at(src, stock[name]['offset_bytes'], stock[name]['size_bytes'])
+                   for name in NV}
+    return build_write_plan(stock, hashes, profile, base, work, prepared,
+                            nv_data, dump.stat().st_size)
+
+
+def build_write_plan(stock, hashes, profile, base, work, prepared, nv_data, disk_bytes):
+    """Assemble the ordered write list from validated geometry and NV bytes.
+
+    stock: partition dict from validate_gpt(); hashes: NV sha256 dict;
+    nv_data: dict {partition name: bytes}; disk_bytes: total eMMC size.
+    Shared by the full-backup and the --no-backup install paths.
+    """
+    base, work = Path(base), Path(work)
     check_base(base)
-    target, primary, secondary = target_gpt(base / 'gpt_both0.bin', dump.stat().st_size, work)
+    target, primary, secondary = target_gpt(base / 'gpt_both0.bin', disk_bytes, work)
     writes = []
     def add(name, path, start, capacity):
         path = Path(path)
@@ -350,14 +344,13 @@ def make_plan(dump, profile, base, work, prepared):
     # and bootchain components have been read back and verified.
     for name, path in prepared:
         add(name, path, target[name]['first_lba'], target[name]['size_bytes'])
-    with dump.open('rb') as src:
-        for name in NV:
-            data = read_at(src, stock[name]['offset_bytes'], stock[name]['size_bytes'])
-            path = work / (name + '.bin')
-            capacity = target[name]['size_bytes']
-            if len(data) > capacity: raise ValueError('NV destination too small: ' + name)
-            path.write_bytes(data + bytes(capacity-len(data)))
-            add(name, path, target[name]['first_lba'], capacity)
+    for name in NV:
+        data = nv_data[name]
+        path = work / (name + '.bin')
+        capacity = target[name]['size_bytes']
+        if len(data) > capacity: raise ValueError('NV destination too small: ' + name)
+        path.write_bytes(data + bytes(capacity-len(data)))
+        add(name, path, target[name]['first_lba'], capacity)
     # No donor devinfo/unlock state is copied. A blank devinfo is initialized by
     # the OpenStick bootloader, as for a freshly erased Android device-info area.
     devinfo = work / 'devinfo.bin'; devinfo.write_bytes(bytes(target['devinfo']['size_bytes']))
@@ -367,13 +360,13 @@ def make_plan(dump, profile, base, work, prepared):
         path = work / (name + '.edl.bin')
         pad_copy(base / filename, path, target[name]['size_bytes'])
         add(name, path, target[name]['first_lba'], target[name]['size_bytes'])
-    add('gpt-secondary', secondary, dump.stat().st_size//SECTOR-33, 33*SECTOR)
+    add('gpt-secondary', secondary, disk_bytes//SECTOR-33, 33*SECTOR)
     add('gpt-primary', primary, 0, 34*SECTOR)
     spans = sorted((w['first_lba'], w['first_lba']+w['sectors'], w['name']) for w in writes)
     for a, b in zip(spans, spans[1:]):
         if a[1] > b[0]: raise ValueError('Overlapping planned writes: '+a[2]+'/'+b[2])
     for start, end, name in spans:
-        if start < 0 or end*SECTOR > dump.stat().st_size: raise ValueError('Write outside disk: '+name)
+        if start < 0 or end*SECTOR > disk_bytes: raise ValueError('Write outside disk: '+name)
         for anchor in ANCHORS:
             part = stock[anchor]
             if start <= part['last_lba'] and end > part['first_lba']:
@@ -383,24 +376,16 @@ def make_plan(dump, profile, base, work, prepared):
 
 class EDL:
     def __init__(self, root, log):
-        from portable_runtime import bundled_edl
-        self.portable = bundled_edl()
-        self.root = self.portable or Path(root).resolve()
-        self.exe = (self.root / 'UFI-EDL.exe' if self.portable else
-                    self.root / ('.venv/Scripts/python.exe' if sys.platform == 'win32' else '.venv/bin/python'))
+        self.root = Path(root).resolve()
+        self.exe = self.root / ('.venv/Scripts/python.exe' if sys.platform == 'win32' else '.venv/bin/python')
         self.log = Path(log)
-        self.checked_usb = False
-        if not self.exe.is_file() or (not self.portable and not (self.root / 'edl.py').is_file()):
+        if not self.exe.is_file() or not (self.root / 'edl.py').is_file():
             raise ValueError('Working EDL environment not found. Set UFI_EDL_ROOT to its folder.')
 
     def __call__(self, action, *args):
         # EDL may return success even when a programmer rejects a write.
         # Every mutation therefore MUST be followed by an independent readback.
-        if self.portable and not self.checked_usb:
-            from portable_runtime import require_single_edl
-            require_single_edl()
-            self.checked_usb = True
-        prefix = [str(self.exe)] if self.portable else [str(self.exe), '-u', str(self.root / 'edl.py')]
+        prefix = [str(self.exe), '-u', str(self.root / 'edl.py')]
         command = [*prefix, action,
                    *map(str, args), '--memory=emmc', '--sectorsize=512']
         run_edl(command, self.root, action, args, self.log)
@@ -422,6 +407,63 @@ def bind_device(edl, dump, stock, work, check_gpt=True):
             edl('rs', 0, 34, current)
             if current.read_bytes() != read_at(src, 0, 34*SECTOR):
                 raise ValueError('Device GPT changed since backup')
+
+
+def bind_device_nv(edl, stock, work, run, nv_data, check_gpt=True):
+    """Fail closed when another modem was connected since the NV read.
+
+    No-backup mode: there is no emmc.bin to compare against; the reference
+    is the NV data read moments ago plus the pre-write GPT preview.
+    """
+    work, run = Path(work), Path(run)
+    for name in ANCHORS:
+        part = stock[name]
+        current = work / ('current-' + name + '.bin')
+        if current.exists():
+            current.unlink()
+        edl('rs', part['first_lba'], part['size_bytes'] // SECTOR, current)
+        if current.stat().st_size != part['size_bytes'] or \
+                digest_bytes(current.read_bytes()) != digest_bytes(nv_data[name]):
+            raise ValueError('Connected modem does not match the NV read: ' + name)
+    if check_gpt:
+        current = work / 'current-gpt.bin'
+        if current.exists():
+            current.unlink()
+        edl('rs', 0, 34, current)
+        preview = (run / 'stock-gpt-preview.bin').read_bytes()[:34 * SECTOR]
+        if current.read_bytes() != preview:
+            raise ValueError('Device GPT changed since NV read')
+
+
+def read_nv_partitions(edl, profile, run, work):
+    """Read only the small NV partitions (fast); no full eMMC backup.
+
+    Returns (stock_parts, nv_data, nv_hashes). Used by --no-backup.
+    The radio and both GPT copies were already verified by radio_preflight().
+    """
+    run, work = Path(run), Path(work)
+    size = profile['disk_bytes']
+    primary = run / 'stock-gpt-preview.bin'
+    secondary = run / 'stock-gpt-secondary.bin'
+    parts = validate_gpt(GPTView(size, primary.read_bytes(), secondary.read_bytes()), size)
+    geometry = [[p['name'], p['first_lba'], p['last_lba']] for p in parts.values()]
+    if geometry != profile['geometry']:
+        raise ValueError('Not the known factory UFI001C layout; no writes performed')
+    nv_data = {}
+    for name in NV:
+        part = parts[name]
+        tmp = work / (name + '.nv.bin')
+        if tmp.exists():
+            tmp.unlink()
+        read_range(edl, part['first_lba'], part['size_bytes'] // SECTOR, tmp)
+        data = tmp.read_bytes()
+        if len(data) != part['size_bytes']:
+            raise ValueError('Incomplete NV read: ' + name)
+        if name in ANCHORS and (data == bytes(len(data)) or data == b'\xff' * len(data)):
+            raise ValueError('Empty identity/NV partition: ' + name)
+        nv_data[name] = data
+    nv_hashes = {name: digest_bytes(data) for name, data in nv_data.items()}
+    return parts, nv_data, nv_hashes
 
 
 def backup_identity(edl, profile, work):
@@ -497,9 +539,10 @@ def new_run(parent):
     path.mkdir(); return path
 
 
-def confirm(text, word):
+def confirm(text):
     print(text, flush=True)
-    if input('Для продолжения введите ' + word + ': ').strip() != word:
+    answer = input('Продолжить? [y/N]: ').strip().lower()
+    if answer not in ('y', 'yes', 'д', 'да'):
         raise ValueError('Отменено; запись не началась')
 
 
@@ -566,43 +609,75 @@ def install_locked(args, locks):
               'Полный бэкап в этом запуске ещё не читался. Сохраните stock-probe.json,\n'
               'если он создан, и edl.log. Старые бэкапы не удаляйте.', flush=True)
         raise
-    existing_bytes = min((run/'emmc.partial').stat().st_size, profile['disk_bytes']) if (run/'emmc.partial').is_file() else 0
-    if (run/'emmc.bin').is_file(): existing_bytes = min((run/'emmc.bin').stat().st_size, profile['disk_bytes'])
-    needed = profile['disk_bytes'] - existing_bytes + 4*GIB
-    if shutil.disk_usage(run).free < needed:
-        raise ValueError(f"Нужно ещё не менее {(profile['disk_bytes']+4*GIB+GIB-1)//GIB} ГиБ свободного места под бэкап и проверку")
-    print('Чтение всей заводской памяти блоками по 32 МБ. Журнал: edl.log\n'
-          'При USB-обрыве сохранённые проверенные блоки можно продолжить через RESUME.cmd.', flush=True)
-    try:
-        dump = full_backup(edl, run, profile, lambda: backup_identity(edl, profile, work))
-    except (ValueError, OSError, subprocess.CalledProcessError):
-        print('Резервное копирование прервано. Запись на модем НЕ НАЧИНАЛАСЬ.\n'
-              'emmc.partial — НЕ готовый бэкап. Сохраните всю папку. Для продолжения\n'
-              'переподключите ЭТОТ ЖЕ модем в EDL, запустите RESUME.cmd и выберите\n'
-              'backup-state.json из этой папки. Другой модем будет отклонён.', flush=True)
-        raise
-    with dump.open('r+b') as saved:
-        saved.flush(); os.fsync(saved.fileno())
-    stock, nv_hashes = check_stock(dump, profile)
-    report = {'format': 1, 'installer': VERSION, 'profile': profile['id'],
-              'backup_bytes': dump.stat().st_size, 'backup_sha256': update.sha(dump),
-              'nv_sha256': nv_hashes, 'status': 'backup-verified',
-              'meaning': 'GPT copies/CRC, expected length, profile and saved SHA256 checked; not a second full-device read'}
-    journal = run / 'install.json'; save_json(journal, report)
-    print('БЭКАП СОХРАНЁН И ПРОВЕРЕН: ' + str(dump), flush=True)
-    writes, stock, _ = make_plan(dump, profile, base, work, prepared)
-    save_json(run / 'write-plan.json', writes)
-    bind_device(edl, dump, stock, work)
-    confirm(f"Проверен заводской профиль {profile['id']}.\n"
-            'Проверьте маркировку платы: UFI001C. Одинакового корпуса недостаточно.\n'
-            'Будут заменены разметка, загрузчики и система. Заводские настройки\n'
-            'станут недоступны; индивидуальные NV этого модема перенесутся из бэкапа.\n'
-            'Автоматический переход — кандидат: аппаратная проверка этой ревизии ещё нужна.\n'
-            'Поддерживайте питание до завершения. Откат: RESTORE.cmd и этот emmc.bin.', 'UFI001C')
-    bind_device(edl, dump, stock, work)  # also binds device after the user prompt
+    no_backup = bool(getattr(args, 'no_backup', False))
+    if not no_backup and not resume_state:
+        answer = input('Сделать полный бэкап заводской памяти? (займёт ~10 минут; '
+                       'без него полный откат будет невозможен) [Y/n]: ').strip().lower()
+        if answer in ('n', 'no', 'н', 'нет'):
+            no_backup = True
+    if no_backup:
+        print('Полный бэкап ПРОПУЩЕН по вашему выбору. Читаются только маленькие NV-разделы.', flush=True)
+        stock, nv_data, nv_hashes = read_nv_partitions(edl, profile, run, work)
+        journal = run / 'install.json'
+        save_json(journal, {'format': 1, 'installer': VERSION, 'profile': profile['id'],
+                            'backup_bytes': 0, 'backup_sha256': None,
+                            'nv_sha256': nv_hashes, 'status': 'nv-only-no-full-backup',
+                            'meaning': 'Only NV partitions were read; no full eMMC backup exists. '
+                                       'Full restore via RESTORE.cmd is impossible.'})
+        print('NV ПРОЧИТАН И ПРОВЕРЕН.', flush=True)
+        writes, stock, _ = build_write_plan(stock, nv_hashes, profile, base, work, prepared,
+                                            nv_data, profile['disk_bytes'])
+        save_json(run / 'write-plan.json', writes)
+        bind_device_nv(edl, stock, work, run, nv_data)
+        confirm(f"Проверен заводской профиль {profile['id']}.\n"
+                'Проверьте маркировку платы: UFI001C. Одинакового корпуса недостаточно.\n'
+                'Будут заменены разметка, загрузчики и система. Заводские настройки\n'
+                'станут недоступны; индивидуальные NV этого модема уже прочитаны и перенесутся.\n'
+                'ВНИМАНИЕ: полный бэкап НЕ делался — откат через tools\\RESTORE.cmd НЕВОЗМОЖЕН.\n'
+                'Поддерживайте питание до завершения.')
+        bind_device_nv(edl, stock, work, run, nv_data)  # also binds device after the user prompt
+        dump = None
+    else:
+        existing_bytes = min((run/'emmc.partial').stat().st_size, profile['disk_bytes']) if (run/'emmc.partial').is_file() else 0
+        if (run/'emmc.bin').is_file(): existing_bytes = min((run/'emmc.bin').stat().st_size, profile['disk_bytes'])
+        needed = profile['disk_bytes'] - existing_bytes + 4*GIB
+        if shutil.disk_usage(run).free < needed:
+            raise ValueError(f"Нужно ещё не менее {(profile['disk_bytes']+4*GIB+GIB-1)//GIB} ГиБ свободного места под бэкап и проверку")
+        print('Чтение всей заводской памяти блоками по 32 МБ. Журнал: edl.log\n'
+              'При USB-обрыве сохранённые проверенные блоки можно продолжить через tools\\RESUME.cmd.', flush=True)
+        try:
+            dump = full_backup(edl, run, profile, lambda: backup_identity(edl, profile, work))
+        except (ValueError, OSError, subprocess.CalledProcessError):
+            print('Резервное копирование прервано. Запись на модем НЕ НАЧИНАЛАСЬ.\n'
+                  'emmc.partial — НЕ готовый бэкап. Сохраните всю папку. Для продолжения\n'
+                  'переподключите ЭТОТ ЖЕ модем в EDL, запустите tools\\RESUME.cmd и выберите\n'
+                  'backup-state.json из этой папки. Другой модем будет отклонён.', flush=True)
+            raise
+        with dump.open('r+b') as saved:
+            saved.flush(); os.fsync(saved.fileno())
+        stock, nv_hashes = check_stock(dump, profile)
+        report = {'format': 1, 'installer': VERSION, 'profile': profile['id'],
+                  'backup_bytes': dump.stat().st_size, 'backup_sha256': update.sha(dump),
+                  'nv_sha256': nv_hashes, 'status': 'backup-verified',
+                  'meaning': 'GPT copies/CRC, expected length, profile and saved SHA256 checked; not a second full-device read'}
+        journal = run / 'install.json'; save_json(journal, report)
+        print('БЭКАП СОХРАНЁН И ПРОВЕРЕН: ' + str(dump), flush=True)
+        writes, stock, _ = make_plan(dump, profile, base, work, prepared)
+        save_json(run / 'write-plan.json', writes)
+        bind_device(edl, dump, stock, work)
+        confirm(f"Проверен заводской профиль {profile['id']}.\n"
+                'Проверьте маркировку платы: UFI001C. Одинакового корпуса недостаточно.\n'
+                'Будут заменены разметка, загрузчики и система. Заводские настройки\n'
+                'станут недоступны; индивидуальные NV этого модема перенесутся из бэкапа.\n'
+                'Автоматический переход — кандидат: аппаратная проверка этой ревизии ещё нужна.\n'
+                'Поддерживайте питание до завершения. Откат: tools\\RESTORE.cmd и этот emmc.bin.')
+        bind_device(edl, dump, stock, work)  # also binds device after the user prompt
     execute_plan(edl, writes, journal, work)
     # Check the untouched identity anchors after all writes as a recovery guard.
-    bind_device(edl, dump, stock, work, check_gpt=False)
+    if no_backup:
+        bind_device_nv(edl, stock, work, run, nv_data, check_gpt=False)
+    else:
+        bind_device(edl, dump, stock, work, check_gpt=False)
     print('\nЗАПИСЬ И ЧТЕНИЕ ОБРАТНО СОВПАЛИ. Аппаратная загрузка ещё не проверена.\n'
           'Отключите USB и включите модем БЕЗ зажатой кнопки. Подождите 2–3 минуты.\n'
           'Подключитесь к Wi-Fi из ACCESS.txt; адрес панели: http://192.168.1.1', flush=True)
@@ -612,12 +687,41 @@ def install_locked(args, locks):
         if sys.platform == 'win32': os.startfile(str(run / 'ACCESS.txt'))
 
 
-PACKAGE_FILES = ('stock_install.py', 'ufi-install.py', 'radio_backup.py', 'radio_report.py', 'edl_watchdog.py', 'chunk_backup.py',
-                 'portable_runtime.py', 'runtime_manifest.py', 'windows_entry.py', 'windows_edl.py', 'windows-runtime.lock.json',
-                 'RUN.cmd', 'CHECK-PC.cmd', 'DRIVER-HELP.cmd', 'DRIVER-RU.txt',
-                 'CHECK-LTE.cmd', 'ufi-postboot-check.sh',
-                 'INSTALL.cmd', 'UPDATE.cmd', 'RESUME.cmd', 'RESTORE.cmd', 'MAKE-BUNDLE.cmd', 'STOCK-CHECK.cmd', 'CHECK-BACKUP.cmd',
-                 'README-STOCK-RU.md', 'VALIDATION-STOCK.md', 'BASE-SOURCES.md')
+# Bundle layout: the ZIP root shows only the three files a beginner needs.
+# Everything else (installer, helpers, docs, drivers) lives under tools/.
+# Tuples are (repo file name, path inside the ZIP).
+PACKAGE_ROOT_FILES = (
+    'INSTALL.cmd',
+    'UPDATE.cmd',
+    'ИНСТРУКЦИЯ.txt',
+)
+PACKAGE_TOOLS_FILES = (
+    'stock_install.py',
+    'ufi-install.py',
+    'radio_backup.py',
+    'radio_report.py',
+    'edl_watchdog.py',
+    'chunk_backup.py',
+    'windows_edl.py',
+    'RUN.cmd',
+    'RESUME.cmd',
+    'RESTORE.cmd',
+    'MAKE-BUNDLE.cmd',
+    'STOCK-CHECK.cmd',
+    'DRIVER-HELP.cmd',
+    'DRIVER-RU.txt',
+    'README-STOCK-RU.md',
+    'README-RU.md',
+    'VALIDATION-STOCK.md',
+    'BASE-SOURCES.md',
+)
+# (repo file, zip path) for files packed under a different name/location.
+PACKAGE_MAPPED_FILES = (
+    ('drivers-README-RU.txt', 'tools/drivers/README-RU.txt'),
+)
+# Backwards compatibility: flat list of repo file names expected in the bundle.
+PACKAGE_FILES = (PACKAGE_ROOT_FILES + PACKAGE_TOOLS_FILES +
+                 tuple(src for src, _ in PACKAGE_MAPPED_FILES))
 
 
 def bundle(args):
@@ -643,17 +747,21 @@ def bundle(args):
         update.prepare_images(images, prepared)
         building=work/'bundle.zip'
         with zipfile.ZipFile(building, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-            # Flat layout: unzip once and run INSTALL.cmd / UPDATE.cmd,
-            # no renaming, no subfolders.
-            prefix = ''
-            for name in PACKAGE_FILES: archive.write(HERE/name, prefix+name)
+            # Layout: unzip once. The root shows only INSTALL.cmd, UPDATE.cmd
+            # and ИНСТРУКЦИЯ.txt; everything else lives under tools/.
+            for name in PACKAGE_ROOT_FILES:
+                archive.write(HERE/name, name)
+            for name in PACKAGE_TOOLS_FILES:
+                archive.write(HERE/name, 'tools/'+name)
+            for src, dst in PACKAGE_MAPPED_FILES:
+                archive.write(HERE/src, dst)
             for path in sorted((HERE/'stock-base').iterdir()):
-                if path.is_file(): archive.write(path, prefix+'stock-base/'+path.name)
+                if path.is_file(): archive.write(path, 'tools/stock-base/'+path.name)
             for path in sorted(images.iterdir()):
-                archive.write(path, prefix+path.name)
+                archive.write(path, 'tools/'+path.name)
             if runtime:
                 for path in sorted(Path(runtime).rglob('*')):
-                    if path.is_file(): archive.write(path, prefix+'runtime/'+path.relative_to(runtime).as_posix())
+                    if path.is_file(): archive.write(path, 'tools/runtime/'+path.relative_to(runtime).as_posix())
         with zipfile.ZipFile(building) as archive:
             if archive.testzip() is not None: raise ValueError('Generated ZIP integrity check failed')
         # Exclusive creation, so an existing release is never overwritten.
@@ -686,7 +794,7 @@ def restore(args):
     input('Нажмите Enter для проверки принадлежности бэкапа: ')
     bind_device(edl, dump, stock, work, check_gpt=False)
     confirm('Возвращается вся заводская память из выбранного бэкапа.\n'
-            'Все изменения после создания этой копии будут потеряны.', 'RESTORE')
+            'Все изменения после создания этой копии будут потеряны.')
     bind_device(edl, dump, stock, work, check_gpt=False)
     recovery = work / 'restore.json'
     save_json(recovery, {'status': 'writing', 'backup_sha256': report['backup_sha256']})
@@ -819,6 +927,10 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--resume', type=Path)
     parser.add_argument('--windows-runtime', type=Path)
+    parser.add_argument('--no-backup', action='store_true',
+                        help='Пропустить полный бэкап eMMC (быстро, ~1 мин). '
+                             'Читаются только маленькие NV-разделы для переноса настроек; '
+                             'полный откат через RESTORE.cmd будет НЕВОЗМОЖЕН.')
     args = parser.parse_args()
     print('UFI001C: простой переход со стока — '+VERSION, flush=True)
     try:
@@ -849,11 +961,11 @@ def main():
                         edl_hint += '\n--- хвост вывода EDL ---\n' + tail.strip()[-1500:] + '\n--- конец ---\n'
         except Exception:
             pass
-        print('\nSTOP: '+str(exc)+edl_hint+'\nЕсли запись уже начиналась, сохраните EDL и используйте RESTORE.cmd.\n'
+        print('\nSTOP: '+str(exc)+edl_hint+'\nЕсли запись уже начиналась, сохраните EDL и используйте tools\\RESTORE.cmd.\n'
               'Бэкапы находятся в '+str(args.backups)+'. Не удаляйте их.', file=sys.stderr)
         return 1
     except KeyboardInterrupt:
-        print('\nПрервано. Если запись началась, используйте RESTORE.cmd; сохраните бэкап.', file=sys.stderr)
+        print('\nПрервано. Если запись началась, используйте tools\\RESTORE.cmd; сохраните бэкап.', file=sys.stderr)
         return 130
     return 0
 
