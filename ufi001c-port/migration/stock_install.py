@@ -170,7 +170,10 @@ def check_stock(dump, profile):
     if geometry != profile['geometry']:
         raise ValueError('Not the known factory UFI001C layout; no writes performed')
     with dump.open('rb') as f:
-        if copy_and_hash(f, parts['modem']) != profile['stock_modem_sha256']:
+        _expected = profile['stock_modem_sha256']
+        if isinstance(_expected, str):
+            _expected = [_expected]
+        if copy_and_hash(f, parts['modem']) not in _expected:
             raise ValueError('Different factory radio partition hash; board revision is NOT established. '
                              'No writes started. Run CHECK-BACKUP.cmd on the saved emmc.bin.')
         hashes = {name: copy_and_hash(f, parts[name]) for name in NV}
