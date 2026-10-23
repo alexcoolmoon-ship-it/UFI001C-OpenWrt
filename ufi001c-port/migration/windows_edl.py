@@ -76,6 +76,16 @@ def main():
                 return _orig(name)
 
             ctypes.util.find_library = _find_library
+            # Pre-load the backend with explicit path and monkey-patch get_backend,
+            # because usblib.py may hold a direct reference to the original
+            # find_library via 'from ctypes.util import find_library'.
+            try:
+                import usb.backend.libusb1 as _libusb1
+                _preloaded = _libusb1.get_backend(find_library=lambda n: str(dll))
+                if _preloaded is not None:
+                    _libusb1.get_backend = lambda find_library=None: _preloaded
+            except Exception:
+                pass
     if sys.argv[1:] == ['--self-test']:
         import usb.backend.libusb1
         import usb.core
