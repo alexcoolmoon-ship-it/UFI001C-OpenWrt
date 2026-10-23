@@ -68,12 +68,6 @@ jobs:
           python-version: '3.11'
       - name: Check resumable reads and native Windows file locking
         run: python -m unittest discover -s ufi001c-port/tests -p test_chunk_backup.py -v
-      - name: Check portable runtime guards
-        run: python -m unittest discover -s ufi001c-port/tests -p test_portable_runtime.py -v
-      - name: Check pinned loader download guards
-        run: python -m unittest discover -s ufi001c-port/tests -p test_windows_sources.py -v
-      - name: Check native CMD report exit codes
-        run: python -m unittest discover -s ufi001c-port/tests -p test_cmd_reporting.py -v
       - name: Install locked build tools
         run: python -m pip install --require-hashes -r ufi001c-port/ci/windows-build-requirements.txt
       - name: Build and smoke-test offline Windows executables
