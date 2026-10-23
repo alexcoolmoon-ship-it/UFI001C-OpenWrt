@@ -28,8 +28,8 @@ commit podkop
 commit sing-box
 commit firewall
 EOF
-/etc/init.d/zapret disable
-/etc/init.d/ufi-care enable
+/etc/init.d/zapret disable 2>/dev/null || true
+[ -x /etc/init.d/ufi-care ] && /etc/init.d/ufi-care enable 2>/dev/null || true
 # No credentials are distributed. Keep ordinary LTE DNS until the owner
 # enters a proxy URL and explicitly enables Podkop.
 /etc/init.d/podkop disable
