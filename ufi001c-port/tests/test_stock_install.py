@@ -91,6 +91,20 @@ class StockTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Different factory radio'):
             s.check_stock(dump, s.load_profile(BASE, profile['id']))
 
+    def test_3_69gb_variant_layout_is_exact_and_plan_fits(self):
+        profile = s.load_profile(BASE, 'ufi001c-4gb-ufi001bc-20211121-80mb')
+        self.assertEqual(profile['disk_bytes'], 3959422976)
+        profile['stock_modem_sha256'] = self.profile['stock_modem_sha256']
+        dump = stock_fixture(self.p/'stock369.bin', profile)
+        preview = self.p/'preview369.bin'
+        with dump.open('rb') as f: preview.write_bytes(f.read(34*512))
+        self.assertEqual(s.preview_profile(preview, BASE)['id'], profile['id'])
+        prepared, work = self.image_pair()
+        plan, stock, _ = s.make_plan(dump, profile, BASE, work, prepared)
+        self.assertTrue(all((x['first_lba']+x['sectors'])*512 <= profile['disk_bytes'] for x in plan))
+        with self.assertRaisesRegex(ValueError, 'Different factory radio'):
+            s.check_stock(dump, s.load_profile(BASE, profile['id']))
+
     def test_preview_rejects_unknown_size_moved_partition_and_bad_crc(self):
         import copy
         for mode in ('size', 'moved', 'crc'):

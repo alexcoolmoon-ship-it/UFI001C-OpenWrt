@@ -34,7 +34,7 @@ from edl_watchdog import run_edl, EDLError
 from chunk_backup import full_backup, read_range, exclusive
 from radio_report import summarize as summarize_radio
 
-VERSION = '3.2.12'
+VERSION = '3.2.13'
 SECTOR = 512
 GIB = 1024**3
 NV = ('modemst1', 'modemst2', 'fsg', 'fsc', 'sec')
@@ -51,7 +51,8 @@ LIMITS = {'boot.img': 64*1024**2, 'system.img': GIB,
           'VALIDATION-v3.2.0.md': 65536, 'VALIDATION-v3.2.1.md': 65536, 'VALIDATION-v3.2.2.md': 65536,
           'VALIDATION-v3.2.3.md': 65536, 'VALIDATION-v3.2.4.md': 65536, 'VALIDATION-v3.2.5.md': 65536, 'VALIDATION-v3.2.6.md': 65536,
           'VALIDATION-v3.2.7.md': 65536, 'VALIDATION-v3.2.8.md': 65536, 'VALIDATION-v3.2.9.md': 65536,
-          'VALIDATION-v3.2.10.md': 65536, 'VALIDATION-v3.2.11.md': 65536, 'VALIDATION-v3.2.12.md': 65536}
+          'VALIDATION-v3.2.10.md': 65536, 'VALIDATION-v3.2.11.md': 65536, 'VALIDATION-v3.2.12.md': 65536,
+          'VALIDATION-v3.2.13.md': 65536}
 
 
 def digest_bytes(data):
@@ -94,8 +95,25 @@ def preview_profile(preview, base):
                 for p in sorted(Path(base).glob('stock-profile*.json'))]
     matches = [p for p in profiles if p['disk_bytes'] == disk_bytes and p['geometry'] == geometry]
     if len(matches) != 1:
+        # Closest-profile diff: next screenshot names the exact partitions
+        # that differ, instead of only the disk size.
+        def diffs(p):
+            out = []
+            if len(p['geometry']) != len(geometry):
+                out.append(f'разделов: {len(p["geometry"])} -> {len(geometry)}')
+            for want, got in zip(p['geometry'], geometry):
+                if want != got:
+                    out.append(f'{got[0]}: {want[1]}-{want[2]} -> {got[1]}-{got[2]}')
+            return out
+        ranked = sorted(profiles, key=lambda p: len(diffs(p)))
+        hint = ''
+        if ranked:
+            d = diffs(ranked[0])
+            hint = (f' Ближайший профиль: {ranked[0]["id"]} ({ranked[0]["disk_bytes"]} байт); '
+                    f'отличия: {", ".join(d[:5])}.' if d else
+                    f' Ближайший профиль: {ranked[0]["id"]} ({ranked[0]["disk_bytes"]} байт); разметка совпала, отличается только размер диска.')
         raise ValueError(f'Неизвестная заводская разметка ({disk_bytes} байт по GPT). '
-                         'Запись не началась. Сохраните stock-gpt-preview.bin и edl.log.')
+                         f'Запись не началась. Сохраните stock-gpt-preview.bin и edl.log.{hint}')
     return matches[0]
 
 
