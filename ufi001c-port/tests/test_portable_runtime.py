@@ -68,8 +68,8 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaises(ValueError): manifest.verify_runtime(runtime, MIGRATION)
 
     def test_portable_edl_uses_native_exe_and_one_usb_precheck(self):
-        root = self.root / 'Папка с пробелами' / 'edl'; root.mkdir(parents=True)
-        (root / 'UFI-EDL.exe').write_bytes(b'fixture')
+        runtime = make_runtime(self.root / 'Папка с пробелами' / 'runtime')
+        root = runtime / 'edl'
         with patch.object(portable, 'bundled_edl', return_value=root), \
              patch.object(portable, 'require_single_edl') as check, patch.object(stock, 'run_edl') as run:
             edl = stock.EDL(self.root / 'unused', self.root / 'log')
@@ -80,6 +80,24 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(command[:4], [str(root / 'UFI-EDL.exe'), 'rs', '0', '34'])
             self.assertNotIn('-u', command)
             self.assertTrue(command[-2:] == ['--memory=emmc', '--sectorsize=512'])
+
+    def test_portable_edl_refuses_other_version_and_modified_runtime(self):
+        # Regression guard: v3.2.11 on the user's PC silently ran the
+        # v3.2.10 EDL because EDL.__init__ never checked the runtime it
+        # was about to run. Both a foreign version and a partially
+        # overwritten runtime must stop before any device operation.
+        for case in ['version', 'modified']:
+            runtime = make_runtime(self.root / case)
+            if case == 'version':
+                value = json.loads((runtime / 'runtime-manifest.json').read_text())
+                value['version'] = '3.2.10'
+                (runtime / 'runtime-manifest.json').write_text(json.dumps(value))
+            else:
+                (runtime / 'edl/UFI-EDL.exe').write_bytes(b'MZchanged')
+            with self.subTest(case=case), \
+                 patch.object(portable, 'bundled_edl', return_value=runtime / 'edl'):
+                with self.assertRaisesRegex(ValueError, 'другого комплекта|не совпадает'):
+                    stock.EDL(self.root / 'unused', self.root / 'log')
 
     def test_legacy_edl_environment_remains_supported(self):
         edl_root = self.root / 'edl'; (edl_root / '.venv/Scripts').mkdir(parents=True)

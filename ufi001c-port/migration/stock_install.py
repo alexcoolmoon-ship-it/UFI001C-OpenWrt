@@ -34,7 +34,7 @@ from edl_watchdog import run_edl, EDLError
 from chunk_backup import full_backup, read_range, exclusive
 from radio_report import summarize as summarize_radio
 
-VERSION = '3.2.11'
+VERSION = '3.2.12'
 SECTOR = 512
 GIB = 1024**3
 NV = ('modemst1', 'modemst2', 'fsg', 'fsc', 'sec')
@@ -51,7 +51,7 @@ LIMITS = {'boot.img': 64*1024**2, 'system.img': GIB,
           'VALIDATION-v3.2.0.md': 65536, 'VALIDATION-v3.2.1.md': 65536, 'VALIDATION-v3.2.2.md': 65536,
           'VALIDATION-v3.2.3.md': 65536, 'VALIDATION-v3.2.4.md': 65536, 'VALIDATION-v3.2.5.md': 65536, 'VALIDATION-v3.2.6.md': 65536,
           'VALIDATION-v3.2.7.md': 65536, 'VALIDATION-v3.2.8.md': 65536, 'VALIDATION-v3.2.9.md': 65536,
-          'VALIDATION-v3.2.10.md': 65536, 'VALIDATION-v3.2.11.md': 65536}
+          'VALIDATION-v3.2.10.md': 65536, 'VALIDATION-v3.2.11.md': 65536, 'VALIDATION-v3.2.12.md': 65536}
 
 
 def digest_bytes(data):
@@ -380,6 +380,15 @@ class EDL:
         from portable_runtime import bundled_edl
         self.portable = bundled_edl()
         self.root = self.portable or Path(root).resolve()
+        if self.portable:
+            # Never run an EDL from another kit: v3.2.11 on the user's PC
+            # silently ran the v3.2.10 EDL (same folder layout, old
+            # windows_edl.py) because nothing checked the runtime. Verify
+            # version + full file inventory before any device operation.
+            from runtime_manifest import verify_portable_runtime
+            manifest = verify_portable_runtime(Path(self.root).parent)
+            print(f"Runtime: {manifest['version']} / {str(manifest.get('source_commit'))[:7]}",
+                  flush=True)
         self.exe = (self.root / 'UFI-EDL.exe' if self.portable else
                     self.root / ('.venv/Scripts/python.exe' if sys.platform == 'win32' else '.venv/bin/python'))
         self.log = Path(log)
