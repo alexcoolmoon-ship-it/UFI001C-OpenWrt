@@ -105,6 +105,23 @@ class StockTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Different factory radio'):
             s.check_stock(dump, s.load_profile(BASE, profile['id']))
 
+    def test_check_stock_accepts_list_of_known_radio_hashes(self):
+        # Regression: check_stock compared the radio digest with != against
+        # the profile value, which is a list on 4GB profiles, so it rejected
+        # every known radio after a full backup (v3.2.13 on the 3.69 GB unit).
+        profile = s.load_profile(BASE, 'ufi001c-4gb-ufi001bc-20211121-80mb')
+        dump = stock_fixture(self.p/'stock369list.bin', profile)
+        parts = s.validate_gpt(dump)
+        with dump.open('rb') as f:
+            f.seek(parts['modem']['offset_bytes'])
+            digest = hashlib.sha256(f.read(parts['modem']['size_bytes'])).hexdigest()
+        profile['stock_modem_sha256'] = [digest, 'f' * 64]
+        stock, _hashes = s.check_stock(dump, profile)
+        self.assertEqual(stock['modem']['first_lba'], profile['geometry'][0][1])
+        profile['stock_modem_sha256'] = ['f' * 64]
+        with self.assertRaisesRegex(ValueError, 'Different factory radio'):
+            s.check_stock(dump, profile)
+
     def test_preview_rejects_unknown_size_moved_partition_and_bad_crc(self):
         import copy
         for mode in ('size', 'moved', 'crc'):

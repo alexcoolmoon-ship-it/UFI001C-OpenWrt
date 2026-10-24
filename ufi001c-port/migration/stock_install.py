@@ -34,7 +34,7 @@ from edl_watchdog import run_edl, EDLError
 from chunk_backup import full_backup, read_range, exclusive
 from radio_report import summarize as summarize_radio
 
-VERSION = '3.2.13'
+VERSION = '3.2.14'
 SECTOR = 512
 GIB = 1024**3
 NV = ('modemst1', 'modemst2', 'fsg', 'fsc', 'sec')
@@ -52,7 +52,7 @@ LIMITS = {'boot.img': 64*1024**2, 'system.img': GIB,
           'VALIDATION-v3.2.3.md': 65536, 'VALIDATION-v3.2.4.md': 65536, 'VALIDATION-v3.2.5.md': 65536, 'VALIDATION-v3.2.6.md': 65536,
           'VALIDATION-v3.2.7.md': 65536, 'VALIDATION-v3.2.8.md': 65536, 'VALIDATION-v3.2.9.md': 65536,
           'VALIDATION-v3.2.10.md': 65536, 'VALIDATION-v3.2.11.md': 65536, 'VALIDATION-v3.2.12.md': 65536,
-          'VALIDATION-v3.2.13.md': 65536}
+          'VALIDATION-v3.2.13.md': 65536, 'VALIDATION-v3.2.14.md': 65536}
 
 
 def digest_bytes(data):
@@ -189,7 +189,14 @@ def check_stock(dump, profile):
     if geometry != profile['geometry']:
         raise ValueError('Not the known factory UFI001C layout; no writes performed')
     with dump.open('rb') as f:
-        if copy_and_hash(f, parts['modem']) != profile['stock_modem_sha256']:
+        # stock_modem_sha256 may be a list (4GB profiles carry two known
+        # factory builds). A plain != against the list is always true and
+        # wrongly rejects every known radio on those profiles; compare
+        # membership instead, mirroring radio_report.summarize().
+        expected = profile['stock_modem_sha256']
+        if isinstance(expected, str):
+            expected = [expected]
+        if copy_and_hash(f, parts['modem']) not in expected:
             raise ValueError('Different factory radio partition hash; board revision is NOT established. '
                              'No writes started. Run CHECK-BACKUP.cmd on the saved emmc.bin.')
         hashes = {name: copy_and_hash(f, parts[name]) for name in NV}
