@@ -114,6 +114,16 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Неполный комплект'):
                 portable.bundled_edl()
 
+    def test_windows_edl_keeps_backend_preload_and_loader_fallback(self):
+        # Regression guard: the v3.2.10 UX commit (4b6f145) silently dropped
+        # both blocks from windows_edl.py, bringing back NoBackendError and
+        # "Trying with no loader given" on the user's PC. Neither may be
+        # lost again by a file-level rewrite.
+        source = (MIGRATION / 'windows_edl.py').read_text()
+        self.assertIn('_libusb1.get_backend = lambda', source)
+        self.assertIn("Auto-inject --loader", source)
+        self.assertIn('007050e1*.bin', source)
+
     def test_frozen_entry_resolves_data_next_to_usb_zip_not_internal_directory(self):
         import windows_entry
         exe=self.root/'USB тест/runtime/UFI001C-Installer.exe'

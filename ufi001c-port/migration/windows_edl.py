@@ -76,6 +76,16 @@ def main():
                 return _orig(name)
 
             ctypes.util.find_library = _find_library
+            # Pre-load the backend with explicit path and monkey-patch get_backend,
+            # because usblib.py may hold a direct reference to the original
+            # find_library via 'from ctypes.util import find_library'.
+            try:
+                import usb.backend.libusb1 as _libusb1
+                _preloaded = _libusb1.get_backend(find_library=lambda n: str(dll))
+                if _preloaded is not None:
+                    _libusb1.get_backend = lambda find_library=None: _preloaded
+            except Exception:
+                pass
     if sys.argv[1:] == ['--self-test']:
         import usb.backend.libusb1
         import usb.core
@@ -102,6 +112,33 @@ def main():
         rc = _ensure_usb_backend(windows)
         if rc:
             return rc
+    # Auto-inject --loader for unfused MSM8916 (UFI001C) when not specified.
+    # The loader DB lookup fails for this PK_HASH, but the device accepts any
+    # MSM8916 loader. Bypass the DB by passing the loader explicitly.
+    if '--loader' not in sys.argv:
+        _loader = None
+        _bases = [root / 'Loaders', root / '_internal' / 'Loaders']
+        # 1) Exact PK_HASH match first
+        for _base in _bases:
+            for _sub in ['', 'qualcomm/factory/msm8916']:
+                _p = _base / _sub / '007050e100000000_cc3153a80293939b_fhprg.bin' if _sub else _base / '007050e100000000_cc3153a80293939b_fhprg.bin'
+                if _p.is_file():
+                    _loader = str(_p)
+                    break
+            if _loader:
+                break
+        # 2) Fallback: any MSM8916 loader (device is unfused, any works)
+        if not _loader:
+            for _base in _bases:
+                if _base.is_dir():
+                    _found = sorted(_base.rglob('007050e1*.bin'))
+                    if _found:
+                        _loader = str(_found[0])
+                        break
+        if _loader:
+            # Insert after script name: edl.py --loader <path> <cmd...>
+            sys.argv.insert(1, _loader)
+            sys.argv.insert(1, '--loader')
     sys.argv[0] = str(root / 'edl.py')
     # The upstream code and Firehose command implementation are not patched.
     runpy.run_path(sys.argv[0], run_name='__main__')
