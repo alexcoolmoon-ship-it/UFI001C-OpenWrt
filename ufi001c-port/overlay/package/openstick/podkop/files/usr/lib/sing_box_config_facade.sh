@@ -15,11 +15,6 @@ sing_box_cf_add_dns_server() {
     server_port=$(url_get_port "$server")
 
     case "$type" in
-    tcp)
-        [ -z "$server_port" ] && server_port=53
-        config=$(sing_box_cm_add_tcp_dns_server "$config" "$tag" "$server_address" "$server_port" "$domain_resolver" \
-            "$detour")
-        ;;
     udp)
         [ -z "$server_port" ] && server_port=53
         config=$(sing_box_cm_add_udp_dns_server "$config" "$tag" "$server_address" "$server_port" "$domain_resolver" \

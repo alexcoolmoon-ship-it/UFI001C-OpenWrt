@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from prepare_engine import prepare as prepare_engine
 from check_radio_source import verify as verify_radio
+from prepare_clean import apply as apply_clean
 
 here = Path(__file__).resolve().parent
 args = argparse.ArgumentParser()
@@ -39,6 +40,11 @@ else:
     run("git", "apply", "--reverse", "--check", patch)
 shutil.copytree(here / "overlay", root, dirs_exist_ok=True)
 prepare_engine(root)
+# Restore the clean profile over the overlay (as in the last successful
+# build): the shipped Podkop is the clean tree, and check_rootfs verifies
+# exactly that. Dropping this call in the v3.2.10 UX commit is what made
+# the firmware diverge from the tested clean profile.
+apply_clean(root)
 shutil.copy2(here / "feeds.conf", root / "feeds.conf")
 shutil.copy2(root / "ufi001c.config", root / ".config")
 # Force package metadata to include the newly added driver definitions.

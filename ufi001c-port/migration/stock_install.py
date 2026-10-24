@@ -50,7 +50,8 @@ LIMITS = {'boot.img': 64*1024**2, 'system.img': GIB,
           'VALIDATION-v3.1.3.md': 65536, 'VALIDATION-v3.1.4.md': 65536, 'VALIDATION-v3.1.5.md': 65536, 'VALIDATION-v3.1.6.md': 65536,
           'VALIDATION-v3.2.0.md': 65536, 'VALIDATION-v3.2.1.md': 65536, 'VALIDATION-v3.2.2.md': 65536,
           'VALIDATION-v3.2.3.md': 65536, 'VALIDATION-v3.2.4.md': 65536, 'VALIDATION-v3.2.5.md': 65536, 'VALIDATION-v3.2.6.md': 65536,
-          'VALIDATION-v3.2.7.md': 65536, 'VALIDATION-v3.2.8.md': 65536, 'VALIDATION-v3.2.9.md': 65536}
+          'VALIDATION-v3.2.7.md': 65536, 'VALIDATION-v3.2.8.md': 65536, 'VALIDATION-v3.2.9.md': 65536,
+          'VALIDATION-v3.2.10.md': 65536}
 
 
 def digest_bytes(data):

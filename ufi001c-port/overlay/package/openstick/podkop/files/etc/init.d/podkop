@@ -40,12 +40,8 @@ service_triggers() {
 
     PROCD_RELOAD_DELAY=$badwan_reload_delay
 
-    # NOTE (UFI): the upstream "config.change -> restart" trigger is removed.
-    # /usr/bin/podkop stop()/start() do "uci commit podkop" (shutdown_correctly
-    # flag), and each commit re-fired the trigger -> a self-perpetuating
-    # restart storm that wedged/rebooted the stick on manual "Restart podkop".
-    # Config changes are applied via the manual "Restart podkop" button.
     procd_open_trigger
+    procd_add_config_trigger "config.change" "$NAME" "$initscript" restart 'on_config_change'
 
     if [ "$enable_badwan_interface_monitoring" = "1" ]; then
         for iface in $badwan_monitored_interfaces; do
