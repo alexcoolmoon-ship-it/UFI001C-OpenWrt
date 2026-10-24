@@ -93,6 +93,10 @@ sing_box_cm_configure_dns() {
 # Example:
 #   CONFIG=$(sing_box_cm_add_udp_dns_server "$CONFIG" "udp-server" "8.8.8.8" 53)
 #######################################
+sing_box_cm_add_tcp_dns_server() {
+    sing_box_cm_add_udp_dns_server "$@" | jq '(.dns.servers[-1]).type = "tcp"'
+}
+
 sing_box_cm_add_udp_dns_server() {
     local config="$1"
     local tag="$2"
