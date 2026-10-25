@@ -7,7 +7,13 @@
 # (see 99-ufi001c-factory-snapshot), clears the root password and drops
 # volatile identity files, then reboots.
 #
-# Fail closed: if the snapshot is missing or corrupt, nothing is changed.
+# Fail closed: if the snapshot is missing, corrupt, or incomplete,
+# nothing is changed. The old code deleted /etc/config BEFORE extracting,
+# so any extraction failure left the modem with a half-restored config
+# (no WiFi, broken LuCI theme, as seen twice on 25.10.2026). Restore now
+# extracts to a scratch directory on the same filesystem, verifies the
+# result, and only then swaps it into place; on any failure the live
+# config is untouched and the modem keeps working.
 # A reset also cannot restore packages installed later or files added
 # outside /etc/config; a full wipe is still UPDATE.cmd.
 ETC="${UFI001C_ETC:-/etc}"
@@ -22,10 +28,38 @@ if ! gzip -t "$SNAP" 2>/dev/null; then
 	logger -t ufi001c-button "Factory reset refused: corrupt snapshot at $SNAP"
 	exit 1
 fi
+# Scratch directory on the same filesystem as /etc/config, so the swap
+# below is a rename, not a cross-filesystem copy.
+TMPD="$ETC/.ufi001c-reset-tmp-$$"
+mkdir -p "$TMPD" || {
+	logger -t ufi001c-button "Factory reset refused: cannot create scratch dir"
+	exit 1
+}
+trap 'rm -rf "$TMPD"' EXIT
+if ! tar --no-same-owner -xzf "$SNAP" -C "$TMPD"; then
+	logger -t ufi001c-button "Factory reset refused: snapshot did not unpack"
+	exit 1
+fi
+# The restored config must bring up WiFi and LuCI; otherwise refuse
+# without touching the live config.
+for f in network wireless system luci; do
+	[ -f "$TMPD/config/$f" ] || {
+		logger -t ufi001c-button "Factory reset refused: snapshot lacks config/$f"
+		exit 1
+	}
+done
+grep -q 'mediaurlbase' "$TMPD/config/luci" 2>/dev/null || {
+	logger -t ufi001c-button "Factory reset refused: snapshot luci has no mediaurlbase"
+	exit 1
+}
+grep -q 'wifi-device' "$TMPD/config/wireless" 2>/dev/null || {
+	logger -t ufi001c-button "Factory reset refused: snapshot wireless has no radio"
+	exit 1
+}
+# Verified: swap into place.
 rm -rf "$ETC/config"
-mkdir -p "$ETC/config"
-if ! tar --no-same-owner -xzf "$SNAP" -C "$ETC"; then
-	logger -t ufi001c-button "Factory reset failed: snapshot did not unpack"
+if ! mv "$TMPD/config" "$ETC/config"; then
+	logger -t ufi001c-button "Factory reset failed: cannot install config"
 	exit 1
 fi
 # Back to the first-boot state: root without a password.

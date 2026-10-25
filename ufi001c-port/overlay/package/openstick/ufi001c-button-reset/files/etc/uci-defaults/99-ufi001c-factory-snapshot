@@ -6,9 +6,43 @@
 # UPDATE) they run again and the snapshot is recreated.
 # If the snapshot is ever deleted, the button reset refuses to run
 # instead of wiping settings it cannot restore.
+#
+# The snapshot is verified before it is trusted: on 25.10.2026 the button
+# reset twice left the modem without WiFi and with a broken LuCI theme,
+# which is exactly what a snapshot without wireless and without
+# luci.main.mediaurlbase restores. If verification fails, the snapshot is
+# discarded and this script exits nonzero, so it is NOT deleted and runs
+# again at the next boot, when the first-boot defaults are complete.
 BOARD_FILE="${UFI001C_BOARD_FILE:-/tmp/sysinfo/board_name}"
 [ "$(cat "$BOARD_FILE" 2>/dev/null)" = "thwc,ufi001c" ] || exit 0
 ETC="${UFI001C_ETC:-/etc}"
 SNAP_DIR="${UFI001C_SNAP_DIR:-/usr/share/ufi001c}"
+SNAP="$SNAP_DIR/factory-config.tar.gz"
 mkdir -p "$SNAP_DIR"
-tar -czf "$SNAP_DIR/factory-config.tar.gz" -C "$ETC" config
+tar -czf "$SNAP" -C "$ETC" config || exit 1
+# A factory config must bring up WiFi and LuCI, otherwise the reset
+# would restore a broken system. Check the members and the two decisive
+# settings inside the archive.
+members="$(tar -tzf "$SNAP" 2>/dev/null)" || {
+	logger -t ufi001c-button "Factory snapshot unreadable, discarding $SNAP"
+	rm -f "$SNAP"
+	exit 1
+}
+for f in config/network config/wireless config/system config/luci; do
+	printf '%s\n' "$members" | grep -qx "$f" || {
+		logger -t ufi001c-button "Factory snapshot lacks $f, discarding $SNAP"
+		rm -f "$SNAP"
+		exit 1
+	}
+done
+tar -xzOf "$SNAP" config/luci 2>/dev/null | grep -q 'mediaurlbase' || {
+	logger -t ufi001c-button "Factory snapshot luci has no mediaurlbase, discarding $SNAP"
+	rm -f "$SNAP"
+	exit 1
+}
+tar -xzOf "$SNAP" config/wireless 2>/dev/null | grep -q 'wifi-device' || {
+	logger -t ufi001c-button "Factory snapshot wireless has no radio, discarding $SNAP"
+	rm -f "$SNAP"
+	exit 1
+}
+exit 0

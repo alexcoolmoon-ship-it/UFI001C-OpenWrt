@@ -51,7 +51,11 @@ class ButtonResetTests(unittest.TestCase):
         etc = self.p / 'etc'
         (etc / 'config').mkdir(parents=True)
         (etc / 'config' / 'network').write_text('user network\n')
-        (etc / 'config' / 'wireless').write_text('user wireless\n')
+        (etc / 'config' / 'wireless').write_text(
+            "config wifi-device 'radio0'\n\toption disabled '0'\n")
+        (etc / 'config' / 'system').write_text('user system\n')
+        (etc / 'config' / 'luci').write_text(
+            "config core 'main'\n\toption mediaurlbase '/luci-static/bootstrap'\n")
         (etc / 'shadow').write_text('root:$6$us3rhash:0:0:99999:7:::\n'
                                     'daemon:*:0:0:99999:7:::\n')
         (etc / 'dropbear').mkdir()
@@ -61,15 +65,25 @@ class ButtonResetTests(unittest.TestCase):
         (etc / 'crontabs' / 'root').write_text('cron\n')
         return etc
 
-    def make_snapshot(self, etc):
+    def make_snapshot_files(self, files):
+        import shutil
         factory = self.p / 'factory'
+        shutil.rmtree(factory, ignore_errors=True)
         (factory / 'config').mkdir(parents=True)
-        (factory / 'config' / 'network').write_text('factory network\n')
-        (factory / 'config' / 'wireless').write_text('factory wireless\n')
+        for name, content in files.items():
+            (factory / 'config' / name).write_text(content)
         snap = self.p / 'factory-config.tar.gz'
         with tarfile.open(snap, 'w:gz') as tar:
             tar.add(factory / 'config', arcname='config')
         return snap
+
+    def make_snapshot(self, etc):
+        return self.make_snapshot_files({
+            'network': 'factory network\n',
+            'wireless': "config wifi-device 'radio0'\n\toption disabled '0'\n",
+            'system': 'factory system\n',
+            'luci': "config core 'main'\n\toption mediaurlbase '/luci-static/bootstrap'\n",
+        })
 
     def test_reset_restores_factory_config_and_clears_password(self):
         etc = self.fake_etc()
@@ -78,7 +92,9 @@ class ButtonResetTests(unittest.TestCase):
                                   'UFI001C_SNAP': str(snap)})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((etc / 'config' / 'network').read_text(), 'factory network\n')
-        self.assertEqual((etc / 'config' / 'wireless').read_text(), 'factory wireless\n')
+        self.assertIn("wifi-device", (etc / 'config' / 'wireless').read_text())
+        self.assertEqual((etc / 'config' / 'system').read_text(), 'factory system\n')
+        self.assertIn('mediaurlbase', (etc / 'config' / 'luci').read_text())
         shadow = (etc / 'shadow').read_text()
         self.assertTrue(shadow.startswith('root::'), shadow)
         self.assertIn('daemon:*:', shadow)
@@ -86,6 +102,39 @@ class ButtonResetTests(unittest.TestCase):
         self.assertFalse((etc / 'uhttpd.crt').exists())
         self.assertFalse((etc / 'crontabs').exists())
         self.assertIn('reboot', self.out.read_text())
+        self.assertFalse(list(etc.glob('.ufi001c-reset-tmp-*')))
+
+    def test_reset_refuses_incomplete_snapshot_and_keeps_config(self):
+        etc = self.fake_etc()
+        snap = self.make_snapshot_files({
+            'network': 'factory network\n',
+            'system': 'factory system\n',
+            'luci': "config core 'main'\n\toption mediaurlbase '/luci-static/bootstrap'\n",
+        })
+        result = self.run_script(RESET, {'UFI001C_ETC': str(etc),
+                                  'UFI001C_SNAP': str(snap)})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((etc / 'config' / 'network').read_text(), 'user network\n')
+        self.assertIn("wifi-device", (etc / 'config' / 'wireless').read_text())
+        self.assertIn('mediaurlbase', (etc / 'config' / 'luci').read_text())
+        self.assertTrue((etc / 'dropbear').exists())
+        self.assertNotIn('reboot', self.out.read_text())
+        self.assertFalse(list(etc.glob('.ufi001c-reset-tmp-*')))
+
+    def test_reset_refuses_snapshot_without_mediaurlbase(self):
+        etc = self.fake_etc()
+        snap = self.make_snapshot_files({
+            'network': 'factory network\n',
+            'wireless': "config wifi-device 'radio0'\n",
+            'system': 'factory system\n',
+            'luci': "config core 'main'\n\toption lang 'ru'\n",
+        })
+        result = self.run_script(RESET, {'UFI001C_ETC': str(etc),
+                                  'UFI001C_SNAP': str(snap)})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((etc / 'config' / 'network').read_text(), 'user network\n')
+        self.assertIn('mediaurlbase', (etc / 'config' / 'luci').read_text())
+        self.assertNotIn('reboot', self.out.read_text())
 
     def test_reset_refuses_without_snapshot_and_changes_nothing(self):
         etc = self.fake_etc()
@@ -139,6 +188,20 @@ class ButtonResetTests(unittest.TestCase):
             names = tar.getnames()
         self.assertIn('config/network', names)
         self.assertIn('config/wireless', names)
+        self.assertIn('config/system', names)
+        self.assertIn('config/luci', names)
+
+    def test_snapshot_discards_incomplete_config(self):
+        etc = self.fake_etc()
+        (etc / 'config' / 'wireless').unlink()
+        board = self.p / 'board_name'
+        board.write_text('thwc,ufi001c')
+        snap_dir = self.p / 'snap'
+        result = self.run_script(SNAPSHOT, {'UFI001C_ETC': str(etc),
+                                     'UFI001C_SNAP_DIR': str(snap_dir),
+                                     'UFI001C_BOARD_FILE': str(board)})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((snap_dir / 'factory-config.tar.gz').exists())
 
     def test_package_wiring(self):
         fragment = (PORT / 'clean/ufi001c.config').read_text()
