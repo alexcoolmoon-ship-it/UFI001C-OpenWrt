@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "version": "0.0.2",
+  "version": "0.0.1",
   "edl": {
     "repository": "https://github.com/bkerler/edl.git",
     "commit": "1cda1a616748d608667b2d13b73a28d3197ceb45",

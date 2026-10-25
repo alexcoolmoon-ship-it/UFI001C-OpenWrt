@@ -1,4 +1,4 @@
-# UFI001C · OpenWrt 25.12.5 · v0.0.2 Clean
+# UFI001C · OpenWrt 25.12.5 · v0.0.1 Clean
 
 Минимальная персональная сборка UFI001C на официальных исходниках OpenWrt 25.12.5
 и Podkop 0.7.24. Поддержка самой платы — отдельный порт, не официальный образ OpenWrt.
@@ -15,10 +15,10 @@ FakeIP, кэш, списки и параметры XHTTP сохранены.
 в репозитории для истории; prepare_clean.py исключает их из этой сборки.
 
 - [Сборка Actions](https://github.com/alexcoolmoon-ship-it/immortalwrt-Actios/actions/workflows/openwrt25-ufi001c.yml)
-- [Изменения и источники](ufi001c-port/RELEASE-NOTES-v0.0.2.md)
+- [Изменения и источники](ufi001c-port/RELEASE-NOTES-v0.0.1.md)
 - [Установка и обновление](ufi001c-port/INSTALL-RU.md)
 - [Простой переход со стока](ufi001c-port/migration/README-STOCK-RU.md)
-- [Проверки сборки](ufi001c-port/VALIDATION-v0.0.2.md)
+- [Проверки сборки](ufi001c-port/VALIDATION-v0.0.1.md)
 
 Полный USB-ZIP включает переносимые программы Windows и EDL. Для стока:
 распаковать целиком, запустить INSTALL.cmd, дождаться бэкапа и проверки записи.

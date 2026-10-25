@@ -34,7 +34,7 @@ from edl_watchdog import run_edl, EDLError
 from chunk_backup import full_backup, read_range, exclusive
 from radio_report import summarize as summarize_radio
 
-VERSION = '0.0.2'
+VERSION = '0.0.1'
 SECTOR = 512
 GIB = 1024**3
 NV = ('modemst1', 'modemst2', 'fsg', 'fsc', 'sec')
@@ -53,8 +53,7 @@ LIMITS = {'boot.img': 64*1024**2, 'system.img': GIB,
           'VALIDATION-v3.2.7.md': 65536, 'VALIDATION-v3.2.8.md': 65536, 'VALIDATION-v3.2.9.md': 65536,
           'VALIDATION-v3.2.10.md': 65536, 'VALIDATION-v3.2.11.md': 65536, 'VALIDATION-v3.2.12.md': 65536,
           'VALIDATION-v3.2.13.md': 65536, 'VALIDATION-v3.2.14.md': 65536,
-          'VALIDATION-v0.0.1.md': 65536,
-          'VALIDATION-v0.0.2.md': 65536}
+          'VALIDATION-v0.0.1.md': 65536}
 
 
 def digest_bytes(data):
@@ -257,7 +256,7 @@ def firmware_files(source, out):
     settings = set(config.splitlines())
     for setting in ('CONFIG_PACKAGE_ufi001c-radio=y', 'CONFIG_PACKAGE_podkop-engine=y'):
         if setting not in settings:
-            raise ValueError('This is not the 0.0.2 clean XHTTP build: missing ' + setting)
+            raise ValueError('This is not the 0.0.1 clean XHTTP build: missing ' + setting)
     # Clean firmware deliberately excludes the old recovery services. Requiring
     # ufi-care here used to reject the real clean .config at the last ZIP gate.
     # Since v3.2.5 the bounded recovery services ufi-lte-health and
