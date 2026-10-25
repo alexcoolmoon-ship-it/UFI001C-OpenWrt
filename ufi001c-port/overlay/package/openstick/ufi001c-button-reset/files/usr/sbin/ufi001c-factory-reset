@@ -1,0 +1,39 @@
+#!/bin/sh
+# UFI001C factory reset for the ext4 rootfs.
+#
+# There is no squashfs overlay here, so the classic firstboot/jffs2reset
+# path does not apply: settings live directly in /etc on the rootfs.
+# Reset therefore restores the /etc/config snapshot taken at first boot
+# (see 99-ufi001c-factory-snapshot), clears the root password and drops
+# volatile identity files, then reboots.
+#
+# Fail closed: if the snapshot is missing or corrupt, nothing is changed.
+# A reset also cannot restore packages installed later or files added
+# outside /etc/config; a full wipe is still UPDATE.cmd.
+ETC="${UFI001C_ETC:-/etc}"
+SNAP="${UFI001C_SNAP:-/usr/share/ufi001c/factory-config.tar.gz}"
+
+logger -t ufi001c-button "Factory reset requested"
+if [ ! -f "$SNAP" ]; then
+	logger -t ufi001c-button "Factory reset refused: no snapshot at $SNAP"
+	exit 1
+fi
+if ! gzip -t "$SNAP" 2>/dev/null; then
+	logger -t ufi001c-button "Factory reset refused: corrupt snapshot at $SNAP"
+	exit 1
+fi
+rm -rf "$ETC/config"
+mkdir -p "$ETC/config"
+if ! tar --no-same-owner -xzf "$SNAP" -C "$ETC"; then
+	logger -t ufi001c-button "Factory reset failed: snapshot did not unpack"
+	exit 1
+fi
+# Back to the first-boot state: root without a password.
+if [ -f "$ETC/shadow" ]; then
+	sed -i 's/^root:[^:]*:/root::/' "$ETC/shadow"
+fi
+# Volatile identity is regenerated at boot; stale copies must not survive.
+rm -rf "$ETC/dropbear" "$ETC/uhttpd.crt" "$ETC/uhttpd.key" "$ETC/crontabs"
+logger -t ufi001c-button "Factory reset done, rebooting"
+sync
+reboot

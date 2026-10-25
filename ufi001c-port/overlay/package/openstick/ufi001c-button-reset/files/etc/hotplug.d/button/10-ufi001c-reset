@@ -1,0 +1,13 @@
+#!/bin/sh
+# UFI001C: hold the stick button while the modem is running, release after
+# 10 seconds or more, and the modem resets its settings to factory defaults.
+# procd runs this script for every button event with BUTTON, ACTION and
+# SEEN (seconds held, on release). The button name is deliberately not
+# filtered: this stick has exactly one button.
+# The 120s cap ignores spurious releases, e.g. a stuck-high GPIO reporting
+# the time since boot as the hold time.
+[ "$ACTION" = "released" ] || exit 0
+[ "${SEEN:-0}" -ge 10 ] 2>/dev/null || exit 0
+[ "${SEEN:-0}" -le 120 ] 2>/dev/null || exit 0
+logger -t ufi001c-button "Button held ${SEEN}s — factory reset"
+"${UFI001C_RESET:-/usr/sbin/ufi001c-factory-reset}"

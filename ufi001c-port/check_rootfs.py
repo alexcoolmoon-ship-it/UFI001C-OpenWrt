@@ -13,6 +13,9 @@ FILES = {
     'etc/hotplug.d/gcrestart/restart_gc.sh': 'overlay/package/openstick/gc/files/restart_gc.sh',
     'etc/config/gc': 'overlay/package/openstick/gc/files/gc.uci',
     'etc/ufi001c-release': 'clean/ufi001c-release',
+    'etc/hotplug.d/button/10-ufi001c-reset': 'overlay/package/openstick/ufi001c-button-reset/files/etc/hotplug.d/button/10-ufi001c-reset',
+    'usr/sbin/ufi001c-factory-reset': 'overlay/package/openstick/ufi001c-button-reset/files/usr/sbin/ufi001c-factory-reset',
+    'etc/uci-defaults/99-ufi001c-factory-snapshot': 'overlay/package/openstick/ufi001c-button-reset/files/etc/uci-defaults/99-ufi001c-factory-snapshot',
     'etc/init.d/sing-box': 'overlay/package/openstick/podkop-engine/files/sing-box.init',
     'etc/uci-defaults/99-ufi001c-addons': 'clean/99-ufi001c-addons',
 }

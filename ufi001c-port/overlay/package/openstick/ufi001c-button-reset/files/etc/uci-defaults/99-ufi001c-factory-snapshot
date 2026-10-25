@@ -1,0 +1,14 @@
+#!/bin/sh
+# First-boot snapshot of /etc/config for the button factory reset.
+# This file sorts after 99-ufi001c and 99-ufi001c-addons, so the snapshot
+# holds factory defaults, not user changes. uci-defaults scripts are
+# deleted after their first run; on a freshly flashed system (INSTALL or
+# UPDATE) they run again and the snapshot is recreated.
+# If the snapshot is ever deleted, the button reset refuses to run
+# instead of wiping settings it cannot restore.
+BOARD_FILE="${UFI001C_BOARD_FILE:-/tmp/sysinfo/board_name}"
+[ "$(cat "$BOARD_FILE" 2>/dev/null)" = "thwc,ufi001c" ] || exit 0
+ETC="${UFI001C_ETC:-/etc}"
+SNAP_DIR="${UFI001C_SNAP_DIR:-/usr/share/ufi001c}"
+mkdir -p "$SNAP_DIR"
+tar -czf "$SNAP_DIR/factory-config.tar.gz" -C "$ETC" config
