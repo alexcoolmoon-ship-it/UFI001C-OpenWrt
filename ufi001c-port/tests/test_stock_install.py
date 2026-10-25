@@ -17,7 +17,7 @@ import zlib
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent/'migration'))
 import stock_install as s
-from test_migration import fixtures
+from test_migration import fixtures, boot as fixture_boot
 
 BASE = s.HERE/'stock-base'
 
@@ -477,6 +477,115 @@ class StockTests(unittest.TestCase):
         with patch.object(s,'EDL') as factory:
             with self.assertRaisesRegex(ValueError,'checksum mismatch'):s.restore(args)
             factory.assert_not_called()
+
+
+class UpdateWithoutBackupTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.p = Path(self.tmp.name)
+
+    def openwrt_device(self, path, write_boot=True):
+        """Fake already-flashed modem: OpenWrt layout, valid UFI boot."""
+        disk = 3875536896
+        total = disk // 512
+        geometry = []
+        for name, (first, size) in s.update.EXPECTED.items():
+            if name == 'rootfs':
+                last = total - 34
+            elif size is None:
+                last = first + 131071
+            else:
+                last = first + size // 512 - 1
+            geometry.append([name, first, last])
+        device = stock_fixture(path, {'disk_bytes': disk, 'geometry': geometry})
+        if write_boot:
+            boot_first = [g for g in geometry if g[0] == 'boot'][0][1]
+            with device.open('r+b') as f:
+                f.seek(boot_first * 512)
+                f.write(fixture_boot())
+        return device, {g[0]: g for g in geometry}
+
+    def live_edl(self, device, writes):
+        """Serve reads from the device file; record writes, serve readback from them."""
+        def edl(action, *args):
+            if action == 'rs':
+                start, count, path = args
+                for first, image in writes:
+                    size = Path(image).stat().st_size
+                    if first <= start and start + count <= first + size // 512:
+                        with Path(image).open('rb') as src:
+                            src.seek((start - first) * 512)
+                            Path(path).write_bytes(src.read(count * 512))
+                        return
+                with device.open('rb') as src:
+                    src.seek(start * 512)
+                    Path(path).write_bytes(src.read(count * 512))
+            elif action == 'ws':
+                first, image = args
+                writes.append((first, Path(image)))
+            else:
+                self.fail(action)
+        return edl
+
+    def run_update(self, device, writes):
+        kit = self.p / 'kit'; kit.mkdir(); fixtures(kit); firmware_metadata(kit)
+        args = argparse.Namespace(firmware=None, backups=self.p / 'backups', edl_root=self.p)
+        with patch.object(s, 'HERE', kit), \
+             patch.object(s, 'EDL', return_value=self.live_edl(device, writes)), \
+             patch('builtins.input', return_value=''):
+            s.update_firmware(args)
+        return args
+
+    def test_update_without_backup_rewrites_only_boot_and_rootfs(self):
+        device, pmap = self.openwrt_device(self.p / 'device.bin')
+        writes = []
+        args = self.run_update(device, writes)
+        self.assertEqual({first for first, _ in writes},
+                         {pmap['boot'][1], pmap['rootfs'][1]})
+        journal = json.loads(next(args.backups.glob('*/update.json')).read_text())
+        self.assertEqual(journal['status'], 'written-and-readback-verified')
+        self.assertEqual(set(journal['verified_writes']), {'boot', 'rootfs'})
+
+    def test_update_rejects_stock_layout_before_any_write(self):
+        device = stock_fixture(self.p / 'device.bin',
+                               json.loads((BASE / 'stock-profile.json').read_text()))
+        writes = []
+        kit = self.p / 'kit'; kit.mkdir(); fixtures(kit); firmware_metadata(kit)
+        args = argparse.Namespace(firmware=None, backups=self.p / 'backups', edl_root=self.p)
+        with patch.object(s, 'HERE', kit), \
+             patch.object(s, 'EDL', return_value=self.live_edl(device, writes)), \
+             patch('builtins.input', return_value=''):
+            with self.assertRaisesRegex(ValueError, 'verified OpenStick layout'):
+                s.update_firmware(args)
+        self.assertEqual(writes, [])
+
+    def test_update_rejects_invalid_live_boot_before_any_write(self):
+        device, _ = self.openwrt_device(self.p / 'device.bin', write_boot=False)
+        writes = []
+        kit = self.p / 'kit'; kit.mkdir(); fixtures(kit); firmware_metadata(kit)
+        args = argparse.Namespace(firmware=None, backups=self.p / 'backups', edl_root=self.p)
+        with patch.object(s, 'HERE', kit), \
+             patch.object(s, 'EDL', return_value=self.live_edl(device, writes)), \
+             patch('builtins.input', return_value=''):
+            with self.assertRaisesRegex(ValueError, 'Invalid/oversized Android boot image'):
+                s.update_firmware(args)
+        self.assertEqual(writes, [])
+
+    def test_update_rejects_empty_nv_anchor_before_any_write(self):
+        device, pmap = self.openwrt_device(self.p / 'device.bin')
+        modemst1_first = pmap['modemst1'][1]
+        with device.open('r+b') as f:
+            f.seek(modemst1_first * 512)
+            f.write(bytes(0x200000))
+        writes = []
+        kit = self.p / 'kit'; kit.mkdir(); fixtures(kit); firmware_metadata(kit)
+        args = argparse.Namespace(firmware=None, backups=self.p / 'backups', edl_root=self.p)
+        with patch.object(s, 'HERE', kit), \
+             patch.object(s, 'EDL', return_value=self.live_edl(device, writes)), \
+             patch('builtins.input', return_value=''):
+            with self.assertRaisesRegex(ValueError, 'Empty identity/NV partition: modemst1'):
+                s.update_firmware(args)
+        self.assertEqual(writes, [])
 
 
 if __name__=='__main__':unittest.main()

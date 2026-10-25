@@ -34,7 +34,7 @@ from edl_watchdog import run_edl, EDLError
 from chunk_backup import full_backup, read_range, exclusive
 from radio_report import summarize as summarize_radio
 
-VERSION = '3.2.14'
+VERSION = '0.0.1'
 SECTOR = 512
 GIB = 1024**3
 NV = ('modemst1', 'modemst2', 'fsg', 'fsc', 'sec')
@@ -52,7 +52,8 @@ LIMITS = {'boot.img': 64*1024**2, 'system.img': GIB,
           'VALIDATION-v3.2.3.md': 65536, 'VALIDATION-v3.2.4.md': 65536, 'VALIDATION-v3.2.5.md': 65536, 'VALIDATION-v3.2.6.md': 65536,
           'VALIDATION-v3.2.7.md': 65536, 'VALIDATION-v3.2.8.md': 65536, 'VALIDATION-v3.2.9.md': 65536,
           'VALIDATION-v3.2.10.md': 65536, 'VALIDATION-v3.2.11.md': 65536, 'VALIDATION-v3.2.12.md': 65536,
-          'VALIDATION-v3.2.13.md': 65536, 'VALIDATION-v3.2.14.md': 65536}
+          'VALIDATION-v3.2.13.md': 65536, 'VALIDATION-v3.2.14.md': 65536,
+          'VALIDATION-v0.0.1.md': 65536}
 
 
 def digest_bytes(data):
@@ -250,12 +251,12 @@ def firmware_files(source, out):
                 with archive.open(info) as src, (out / name).open('xb') as dst:
                     shutil.copyfileobj(src, dst, 1024**2)
     if not all((out / n).is_file() for n in ('boot.img', 'system.img', 'SHA256SUMS', 'build.config', 'ACCESS.txt')):
-        raise ValueError('Choose the complete successful v3 XHTTP firmware ZIP (not source-code ZIP)')
+        raise ValueError('Choose the complete successful UFI001C firmware ZIP (not source-code ZIP)')
     config = (out / 'build.config').read_text(encoding='utf-8-sig')
     settings = set(config.splitlines())
     for setting in ('CONFIG_PACKAGE_ufi001c-radio=y', 'CONFIG_PACKAGE_podkop-engine=y'):
         if setting not in settings:
-            raise ValueError('This is not the v3.2.7 clean XHTTP build: missing ' + setting)
+            raise ValueError('This is not the 0.0.1 clean XHTTP build: missing ' + setting)
     # Clean firmware deliberately excludes the old recovery services. Requiring
     # ufi-care here used to reject the real clean .config at the last ZIP gate.
     # Since v3.2.5 the bounded recovery services ufi-lte-health and
@@ -535,7 +536,7 @@ def backup_identity(edl, profile, work):
     return {'regions':regions}
 
 
-def execute_plan(edl, writes, journal_path, work):
+def execute_plan(edl, writes, journal_path, work, recovery_hint='use RESTORE.cmd'):
     journal = json.loads(Path(journal_path).read_text(encoding='utf-8'))
     journal['status'] = 'writing'; journal['verified_writes'] = []
     save_json(journal_path, journal)
@@ -551,7 +552,7 @@ def execute_plan(edl, writes, journal_path, work):
         if readback.exists(): readback.unlink()
         read_range(edl, item['first_lba'], item['sectors'], readback)
         if readback.stat().st_size != item['sectors']*SECTOR or update.sha(readback) != item['sha256']:
-            raise ValueError('READBACK MISMATCH: '+item['name']+'; keep EDL mode, use RESTORE.cmd')
+            raise ValueError('READBACK MISMATCH: '+item['name']+'; keep EDL mode, '+recovery_hint)
         journal['verified_writes'].append(item['name']); save_json(journal_path, journal)
         readback.unlink()
     journal['status'] = 'written-and-readback-verified'
@@ -612,7 +613,7 @@ def install_locked(args, locks):
         run = new_run(args.backups)
         locks.enter_context(exclusive(run, 'install.lock'))
         source = source or (HERE if (HERE/'boot.img').is_file() and (HERE/'system.img').is_file()
-                            else select_path('Выберите ZIP успешной сборки UFI001C v3 XHTTP', Path.home()/'Downloads'))
+                            else select_path('Выберите ZIP успешной сборки UFI001C', Path.home()/'Downloads'))
     print('Резервная копия и журнал: ' + str(run), flush=True)
     # A full backup plus rootfs preparation/readback needs substantially more
     # space than the compressed firmware ZIP.
@@ -772,7 +773,7 @@ def bundle(args):
 
     No recompilation, USB use, personal backup or NV files in this package.
     """
-    source = args.firmware or select_path('Выберите ZIP успешной сборки UFI001C v3 XHTTP', Path.home()/'Downloads')
+    source = args.firmware or select_path('Выберите ZIP успешной сборки UFI001C', Path.home()/'Downloads')
     output = args.output or Path.home()/'Downloads'/('UFI001C-OpenWrt25-USB-'+VERSION+'.zip')
     output = Path(output); output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists(): raise ValueError('Файл уже существует: '+str(output)+'; переименуйте его или выберите другой --output')
@@ -934,24 +935,86 @@ def probe(args):
 def update_firmware(args):
     """Update an already-flashed modem: rewrite only boot+system via EDL.
 
-    The latest backup is found automatically in the backups folder; the user
-    just double-clicks UPDATE.cmd, no paths to type.
+    No backup is required or used: backups exist only for returning a
+    modem to stock (RESTORE.cmd). Safety comes from live checks instead
+    of a backup match: the connected modem must already carry the
+    verified OpenWrt layout and a valid UFI boot image, and every
+    written section is read back and verified. The user just
+    double-clicks UPDATE.cmd, no paths to type. Without a backup
+    there is no rollback to the current state; that notice is printed
+    but never blocks.
     """
-    backups = Path(args.backups)
-    candidates = sorted(backups.glob('backup-*/emmc.bin'),
-                        key=lambda p: p.stat().st_mtime, reverse=True) if backups.is_dir() else []
-    if not candidates:
-        raise ValueError('Бэкап не найден в ' + str(backups) +
-                         '. Сначала прошейте модем через INSTALL.cmd (он создаст бэкап).')
-    backup = candidates[0]
-    print('Использую бэкап: ' + str(backup), flush=True)
-    print('Подключите модем в EDL-режиме (с зажатой кнопкой), затем отпустите её.', flush=True)
-    cmd = [sys.executable, str(HERE / 'ufi-install.py'), 'update',
-           '--backup', str(backup), '--images', str(HERE),
-           '--edl-root', str(args.edl_root)]
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        raise ValueError('Обновление не удалось (код ' + str(result.returncode) + ').')
+    run = new_run(args.backups)
+    with contextlib.ExitStack() as locks:
+        locks.enter_context(exclusive(run, 'update.lock'))
+        return update_live(args, run)
+
+
+def update_live(args, run):
+    """Backup-free update; see update_firmware. Raises before any write
+    unless the live GPT is the verified OpenWrt layout."""
+    print('Обновление без бэкапа: откат к текущему состоянию не создаётся. '
+          'Бэкапы нужны только для возврата к стоку (RESTORE.cmd).', flush=True)
+    source = args.firmware
+    if not source:
+        source = HERE if (HERE / 'boot.img').is_file() and (HERE / 'system.img').is_file() \
+            else select_path('Выберите ZIP успешной сборки UFI001C', Path.home() / 'Downloads')
+    images = firmware_files(source, run / 'images')
+    work = run / 'prepared'
+    work.mkdir()
+    prepared = update.prepare_images(images, work)
+    edl = EDL(args.edl_root, run / 'edl.log')
+    print('Оставьте подключённым только один модем. Выключите его, зажмите кнопку,\n'
+          'подключите к USB ПК и отпустите кнопку. Это вход в EDL (9008).', flush=True)
+    input('После подключения нажмите Enter. Сначала выполняется только чтение: ')
+    preview = run / 'live-gpt-preview.bin'
+    edl('rs', 0, 34, preview)
+    data = preview.read_bytes()
+    if len(data) != 34 * SECTOR or data[SECTOR:SECTOR + 8] != b'EFI PART':
+        raise ValueError('Incomplete/invalid primary GPT read; no writes performed')
+    disk_bytes = (struct.unpack_from('<Q', data, SECTOR + 32)[0] + 1) * SECTOR
+    parts = read_gpt(io.BytesIO(data), disk_bytes, SECTOR)
+    pmap = update.check_layout(parts)
+    boot_current = run / 'current-boot.bin'
+    edl('rs', pmap['boot']['first_lba'], pmap['boot']['size_bytes'] // SECTOR, boot_current)
+    update.check_boot(boot_current.read_bytes())
+    for name in ANCHORS:
+        part = pmap[name]
+        current = work / ('current-' + name + '.bin')
+        read_range(edl, part['first_lba'], part['size_bytes'] // SECTOR, current)
+        blob = current.read_bytes()
+        if not blob or blob == bytes(len(blob)) or blob == b'\xff' * len(blob):
+            raise ValueError('Empty identity/NV partition: ' + name)
+    writes = []
+    for name, path in prepared:
+        path = Path(path)
+        part = pmap[name]
+        size = path.stat().st_size
+        if not 0 < size <= part['size_bytes'] or size % SECTOR:
+            raise ValueError('Invalid write length: ' + name)
+        writes.append({'name': name, 'file': str(path.resolve()), 'first_lba': part['first_lba'],
+                       'sectors': size // SECTOR, 'sha256': update.sha(path)})
+    spans = sorted((w['first_lba'], w['first_lba'] + w['sectors'], w['name']) for w in writes)
+    for a, b in zip(spans, spans[1:]):
+        if a[1] > b[0]:
+            raise ValueError('Overlapping planned writes: ' + a[2] + '/' + b[2])
+    for start, end, name in spans:
+        if start < 0 or end * SECTOR > disk_bytes:
+            raise ValueError('Write outside disk: ' + name)
+    journal = run / 'update.json'
+    save_json(journal, {'format': 1, 'installer': VERSION, 'status': 'ready',
+                        'meaning': 'Backup-free update: live GPT layout and boot verified; '
+                                   'only boot and rootfs are rewritten.'})
+    execute_plan(edl, writes, journal, work,
+                 recovery_hint='re-run UPDATE.cmd without rebooting')
+    print('\nОБНОВЛЕНИЕ ЗАВЕРШЕНО И ПРОВЕРЕНО ОБРАТНЫМ ЧТЕНИЕМ.\n'
+          'Отключите USB и включите модем БЕЗ зажатой кнопки. Подождите 2–3 минуты.\n'
+          'Подключитесь к Wi-Fi из ACCESS.txt; адрес панели: http://192.168.1.1', flush=True)
+    if (images / 'ACCESS.txt').is_file():
+        print('\n' + (images / 'ACCESS.txt').read_text(encoding='utf-8-sig'), flush=True)
+        shutil.copyfile(images / 'ACCESS.txt', run / 'ACCESS.txt')
+        if sys.platform == 'win32':
+            os.startfile(str(run / 'ACCESS.txt'))
 
 
 def resume_install(args):

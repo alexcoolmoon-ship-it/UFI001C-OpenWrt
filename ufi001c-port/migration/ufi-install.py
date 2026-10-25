@@ -20,7 +20,7 @@ from radio_backup import read_gpt, read_at, copy_and_hash, export_radio
 
 SECTOR = 512
 GIB = 1024**3
-INSTALLER_VERSION = '2.1.0'
+INSTALLER_VERSION = '0.0.1'
 EXPECTED = {
     'cdt': (131072, None), 'sbl1': (262144, 0x80000),
     'rpm': (263168, 0x80000), 'tz': (264192, 0x100000),
